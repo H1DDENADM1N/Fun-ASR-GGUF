@@ -1,3 +1,4 @@
+
 import ctypes
 import numpy as np
 import logging
@@ -5,6 +6,8 @@ import time
 import onnxruntime
 import torch
 import torchaudio
+import sys
+import os
 from pydub import AudioSegment
 from transformers import AutoTokenizer
 from llama_cpp import (
@@ -25,7 +28,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("inference_refine.log", encoding='utf-8'),
+        logging.FileHandler("inference_refine.log", encoding='utf-8', mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -37,14 +40,17 @@ tokenizer_path = f'{model_dir}/Qwen3-0.6B'
 
 # ONNX 模型
 onnx_encoder = f'{model_dir}/FunASR_Nano_Encoder.onnx'       # Audio Encoder
-onnx_embed = f'{model_dir}/FunASR_Nano_Decoder_Embed.onnx'  # Text/Prompt Embedder
 
 # GGUF 模型 (用于解码)
 gguf_model_path = f'{model_dir}/qwen3-0.6b-asr.gguf'
 
 # 输入音频
 test_audio = r'./input.mp3'
-task_prompt = ["将语音转写成中文："]  # 任务提示词 (在 Encoder 阶段融合)
+
+# Prompt 配置 (Prefix + Audio + Suffix)
+# 注意：Audio Encoder 已经移除了硬编码的 Prompt，现在需要我们手动拼接。
+PREFIX_PROMPT = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+SUFFIX_PROMPT = "<|im_end|>\n<|im_start|>assistant\n"
 
 # 音频处理参数 (需与模型训练时一致)
 SAMPLE_RATE = 16000
@@ -61,6 +67,37 @@ MAX_THREADS = 0 # 0 = Auto
 # 辅助函数
 # =========================================================================
 
+def load_gguf_embeddings(model_path):
+    """Load the raw token embedding table from the GGUF file."""
+    # 尝试加载 gguf 库
+    gguf_py_path = os.path.abspath("./llama-cpp-python/vendor/llama.cpp/gguf-py")
+    if gguf_py_path not in sys.path:
+        sys.path.append(gguf_py_path)
+    
+    try:
+        from gguf import GGUFReader
+    except ImportError:
+        logger.error("Could not import GGUFReader. Please ensure ./llama-cpp-python/vendor/llama.cpp/gguf-py exists.")
+        sys.exit(1)
+
+    logger.info(f"Reading GGUF tensors from {model_path}...")
+    reader = GGUFReader(model_path, 'r')
+    
+    try:
+        tensor = next(t for t in reader.tensors if t.name == "token_embd.weight")
+    except StopIteration:
+        logger.error("Could not find 'token_embd.weight' in GGUF file.")
+        sys.exit(1)
+        
+    weights = np.array(tensor.data).reshape(-1, 1024) # 假设 Hidden Size 为 1024，需确保与模型一致
+    logger.info(f"Loaded Embeddings: Shape={weights.shape}, Type={weights.dtype}")
+    
+    if weights.dtype != np.float32:
+        logger.info("Converting embeddings from float16/other to float32...")
+        weights = weights.astype(np.float32)
+    
+    return weights
+
 def normalizer(_audio, target_value=8192.0):
     """音频归一化处理"""
     _audio = _audio.astype(np.float32)
@@ -72,16 +109,6 @@ def normalizer(_audio, target_value=8192.0):
 def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
     """
     纯 Embedding 解码函数 (Pure Embedding Decoding)
-    
-    原理：
-    FunASR 的 Encoder 输出的 Embedding 已经融合了音频特征和任务 Prompt 的语义。
-    因此，我们直接将这个 "Fused Embedding" 注入到 LLM 中，不需要额外拼接 Text Prefix (如 <|im_start|>)。
-    这避免了 "Double Prompt" 导致的分布不匹配问题。
-    
-    参数:
-    llm_obj: Llama 对象
-    audio_embeddings: Numpy 数组 (Shape: [seq_len, 1024])
-    max_new_tokens: 最大生成长度
     """
     
     # 1. 准备数据
@@ -89,14 +116,13 @@ def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
     if len(embeds.shape) == 1:
         embeds = embeds.reshape(1, -1)
     
-    n_audio_tokens, n_dim = embeds.shape
-    logger.info(f"注入 Audio Embeddings Shape: {embeds.shape}")
+    n_tokens, n_dim = embeds.shape
+    logger.info(f"注入 Total Embeddings Shape: {embeds.shape}")
 
     # 2. 初始化 Batch
-    # batch_embd: 用于存放 Audio Embeddings (embd=n_dim, token=NULL)
-    batch_embd = llama_batch_init(n_audio_tokens, n_dim, 1)        
+    batch_embd = llama_batch_init(n_tokens, n_dim, 1)        
     
-    # batch_text: 用于存放生成的 Token IDs (embd=0, token=分配内存)
+    # batch_text: 用于存放生成的 Token IDs
     batch_text = llama_batch_init(1, 0, 1)
 
     ctx = llm_obj.ctx
@@ -106,20 +132,23 @@ def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
     
     try:
         # ---------------------------------------------------------------------
-        # 阶段 A: 注入融合 Embedding (Audio + Prompt fused)
+        # 阶段 A: 注入融合 Embedding
         # ---------------------------------------------------------------------
         logger.info("正在注入融合 Embedding...")
         
-        batch_embd.n_tokens = n_audio_tokens
+        batch_embd.n_tokens = n_tokens
         llm_obj.n_tokens = 0 # 重置 LLM 内部计数器
         
-        for i in range(n_audio_tokens):
+        # 关键：batch.token 设置为 NULL，告知底层使用 embedding
+        batch_embd.token = ctypes.cast(None, ctypes.POINTER(ctypes.c_int32))
+
+        for i in range(n_tokens):
             batch_embd.pos[i] = i
             batch_embd.n_seq_id[i] = 1
             batch_embd.seq_id[i][0] = 0
             
-            # 只在最后一个 Token 开启 Logits 计算，用于预测第一个生成的文本 Token
-            batch_embd.logits[i] = 1 if i == n_audio_tokens - 1 else 0
+            # 只在最后一个 Token 开启 Logits 计算
+            batch_embd.logits[i] = 1 if i == n_tokens - 1 else 0
 
         # 使用 ctypes.memmove 高效拷贝 Numpy 数据到 C 指针
         if not embeds.flags['C_CONTIGUOUS']:
@@ -131,7 +160,7 @@ def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
         if llama_decode(ctx, batch_embd) != 0:
              raise RuntimeError("Audio embedding decoding failed")
         
-        llm_obj.n_tokens += n_audio_tokens
+        llm_obj.n_tokens += n_tokens
 
         # ---------------------------------------------------------------------
         # 阶段 B: 文本生成 (Greedy Search)
@@ -171,7 +200,6 @@ def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
             # 5. 把生成的 Token 喂回去 (Autoregressive)
             batch_text.token[0] = token_id
             batch_text.pos[0] = llm_obj.n_tokens
-            # 必须显式初始化 seq_id，否则会导致随机内存访问错误 (access violation)
             batch_text.n_seq_id[0] = 1
             batch_text.seq_id[0][0] = 0
             batch_text.logits[0] = 1
@@ -199,50 +227,55 @@ def decode_with_pure_embeddings(llm_obj, audio_embeddings, max_new_tokens=200):
 # =========================================================================
 
 def main():
-    print('\nLoading ONNX models...')
+    print('\nStarting Refactored Inference Engine...')
     
-    # 1. 初始化 ONNX Runtime
-    session_opts = onnxruntime.SessionOptions()
-    session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session_opts.intra_op_num_threads = MAX_THREADS
-    
-    # 加载 Audio Encoder 和 Text Embedder
-    # 注意：这里我们只需要这两个模型来生成 "Fused Embedding"
-    ort_session_A = onnxruntime.InferenceSession(onnx_encoder, sess_options=session_opts, providers=['CPUExecutionProvider'])
-    ort_session_B = onnxruntime.InferenceSession(onnx_embed, sess_options=session_opts, providers=['CPUExecutionProvider'])
-    
-    in_name_A = [x.name for x in ort_session_A.get_inputs()]
-    out_name_A = [x.name for x in ort_session_A.get_outputs()]
-    in_name_B = ort_session_B.get_inputs()[0].name
-    out_name_B = [x.name for x in ort_session_B.get_outputs()]
-
-    shape_value_in_A = ort_session_A._inputs_meta[0].shape[-1]
-    
+    # 1. 初始化 tokenizer (仅用于将 Prefix/Suffix 转为 ID，以便查表)
+    # 注意：需确保 tokenizer 与 GGUF 模型词表一致
+    # 这里的 tokenizer 是 Python 端的，用于预处理
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
-    # 2. 加载 GGUF 模型
+    # 2. 加载 GGUF 模型 (用于解码)
     print(f'\nLoading GGUF model: {gguf_model_path}')
     llm = Llama(
         model_path=gguf_model_path,
-        n_ctx=MAX_SEQ_LEN,
+        n_ctx=MAX_SEQ_LEN + 1024, # 适当增加 Context 窗口
         n_threads=MAX_THREADS,
-        embedding=True, # 必须开启，才能分配 embedding 内存
+        embedding=True, # 必须开启
         verbose=False
     )
     print('GGUF model loaded successfully!')
 
-    # 3. 预处理 Prompt
-    # 将文本提示词转换为 Embedding
-    init_all_outputs_B = []
-    for t in task_prompt:
-        tokens = tokenizer(t, return_tensors='np')['input_ids'].astype(np.int32)
-        input_ids = onnxruntime.OrtValue.ortvalue_from_numpy(tokens, 'cpu', 0)
-        input_feed_B = {in_name_B: input_ids}
-        # 运行 Text Embedder
-        init_all_outputs_B.append(ort_session_B.run_with_ort_values(out_name_B, input_feed_B)[0])
+    # 3. 从 GGUF 文件中加载 Raw Embeddings
+    print('\nLoading Raw Embeddings from GGUF...')
+    all_embeddings = load_gguf_embeddings(gguf_model_path)
+    
+    # 4. 准备 Prefix 和 Suffix 的 Embeddings
+    # 必须启用 special tokens 才能正确编码 <|im_start|> 等
+    prefix_tokens = tokenizer.encode(PREFIX_PROMPT, add_special_tokens=False) 
+    suffix_tokens = tokenizer.encode(SUFFIX_PROMPT, add_special_tokens=False)
+    
+    prefix_emb = all_embeddings[prefix_tokens]
+    suffix_emb = all_embeddings[suffix_tokens]
+    
+    logger.info(f"Prefix Shape: {prefix_emb.shape}, Suffix Shape: {suffix_emb.shape}")
 
-    # 4. 处理音频并推理
-    for prompt_embed, audio_file in zip(init_all_outputs_B, [test_audio]):
+    # 5. 初始化 ONNX Audio Encoder
+    print('\nLoading ONNX Audio Encoder...')
+    session_opts = onnxruntime.SessionOptions()
+    session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session_opts.intra_op_num_threads = MAX_THREADS
+    ort_session_A = onnxruntime.InferenceSession(onnx_encoder, sess_options=session_opts, providers=['CPUExecutionProvider'])
+    
+    in_name_A = [x.name for x in ort_session_A.get_inputs()]
+    out_name_A = [x.name for x in ort_session_A.get_outputs()]
+    shape_value_in_A = ort_session_A._inputs_meta[0].shape[-1]
+    
+    # Query Embed for Audio Encoder input (Original logic kept this input)
+    # 假设 hidden_size = 1024
+    query_embed_input = np.ones((1, 10, 1024), dtype=np.float32)
+
+    # 6. 处理音频并推理
+    for audio_file in [test_audio]:
         print("-" * 80)
         print(f"Test Input Audio: {audio_file}")
         
@@ -262,10 +295,10 @@ def main():
              
         stride_step = INPUT_AUDIO_LENGTH if SLIDING_WINDOW <= 0 else SLIDING_WINDOW
         
-        # Padding 逻辑 (保持简单，针对短音频填充静音)
+        # Padding
         if audio_len < INPUT_AUDIO_LENGTH:
              pad_len = INPUT_AUDIO_LENGTH - audio_len
-             pad_samples = np.zeros((1, 1, pad_len), dtype=audio.dtype) # 简单补零，或者补白噪声
+             pad_samples = np.zeros((1, 1, pad_len), dtype=audio.dtype)
              audio = np.concatenate((audio, pad_samples), axis=-1)
              
         aligned_len = audio.shape[-1]
@@ -273,27 +306,34 @@ def main():
         asr_result = ""
         slice_start = 0
         slice_end = INPUT_AUDIO_LENGTH
-        rtf_time = time.time()
         
-        # 循环处理音频切片
         while slice_end <= aligned_len:
-            # 4.1 运行 ONNX Audio Encoder
+            # 6.1 运行 ONNX Audio Encoder
             input_feed_A = {}
             input_feed_A[in_name_A[0]] = onnxruntime.OrtValue.ortvalue_from_numpy(audio[..., slice_start: slice_end], 'cpu', 0)
-            input_feed_A[in_name_A[1]] = prompt_embed # 注入 Task Prompt Embedding
+            input_feed_A[in_name_A[1]] = onnxruntime.OrtValue.ortvalue_from_numpy(query_embed_input, 'cpu', 0)
             
             all_outputs_A = ort_session_A.run_with_ort_values(out_name_A, input_feed_A)
             
-            # 获取融合 Embedding (Batch, Seq, Dim)
-            comprehensive_embedding = all_outputs_A[0].numpy() 
+            # audio_features: (1, Seq_Len, 1024)
+            # 现在 Encoder 返回: [query_embed, x]
+            audio_features = all_outputs_A[0].numpy()
             
-            print("\n=== 使用 GGUF 模型解码 (Low-Level API) ===")
+            # 6.2 拼接: [Prefix, Audio, Suffix]
+            # 注意: audio_features 是 (1, N, 1024)，prefix/suffix 是 (N, 1024)
+            # 统一成 (N, 1024)
+            audio_features_sq = audio_features.squeeze(0) 
+            
+            final_embedding = np.concatenate([prefix_emb, audio_features_sq, suffix_emb], axis=0)
+            
+            print(f"\n=== 推理切片 [{slice_start}:{slice_end}] ===")
+            print(f"Final Input Shape: {final_embedding.shape}")
             
             try:
-                # 4.2 调用 Llama 模型进行解码
+                # 6.3 调用 LLM 解码
                 result_text = decode_with_pure_embeddings(
                     llm, 
-                    comprehensive_embedding,
+                    final_embedding,
                     max_new_tokens=MAX_SEQ_LEN
                 )
                 asr_result += result_text
@@ -303,12 +343,8 @@ def main():
                 import traceback
                 traceback.print_exc()
             
-            # 4.3 更新切片窗口 (防止死循环!)
             slice_start += stride_step
             slice_end = slice_start + INPUT_AUDIO_LENGTH
-
-        # 打印最终统计
-        # print(f"\n\nRTF: {((time.time() - rtf_time) / (audio_len / SAMPLE_RATE)):.3f}")
 
 if __name__ == "__main__":
     main()

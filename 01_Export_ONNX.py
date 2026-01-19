@@ -146,8 +146,9 @@ class RESET_PENALITY(torch.nn.Module):
         return save_id, repeat_penality, penality_reset_count
 
 
+
 class FUNASR_NANO_ENCODER(torch.nn.Module):
-    def __init__(self, funasr_nano, stft_model, nfft_stft, max_stft_len, n_mels, sample_rate, pre_emphasis, lfr_m, lfr_n, lfr_len, _tokenizer):
+    def __init__(self, funasr_nano, stft_model, nfft_stft, max_stft_len, n_mels, sample_rate, pre_emphasis, lfr_m, lfr_n, lfr_len):
         super(FUNASR_NANO_ENCODER, self).__init__()
         self.funasr_nano = funasr_nano.float()
         self.stft_model = stft_model
@@ -180,10 +181,6 @@ class FUNASR_NANO_ENCODER(torch.nn.Module):
             block.self_attn.linear_k.weight.data *= factor
             block.self_attn.linear_k.bias.data *= factor
 
-        head_ids = _tokenizer.encode("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n", return_tensors="pt")
-        tail_ids = _tokenizer.encode("<|im_end|>\n<|im_start|>assistant\n", return_tensors="pt")
-        self.head_embed = self.funasr_nano.llm.model.embed_tokens(head_ids)
-        self.tail_embed = self.funasr_nano.llm.model.embed_tokens(tail_ids)
         self.fake_token = torch.zeros(max_stft_len + 1, dtype=torch.int16)
         for i in range(self.fake_token.shape[0]):
             self.fake_token[i] = (((i - 1) // 2 + 1 - 1) // 2 + 1 - 1) // 2 + 1
@@ -243,17 +240,8 @@ class FUNASR_NANO_ENCODER(torch.nn.Module):
             x += attn
             x = x + block.feed_forward(block.norm2(x))
         x = x[:, :self.fake_token[features_len].to(torch.int64)]
-        concat_embed = torch.cat([self.head_embed, query_embed, x, self.tail_embed], dim=1)
+        concat_embed = torch.cat([query_embed, x], dim=1)
         return concat_embed, concat_embed.shape[1].unsqueeze(0)
-
-
-class FUNASR_NANO_DECODER_EMBED(torch.nn.Module):
-    def __init__(self, funasr_nano):
-        super(FUNASR_NANO_DECODER_EMBED, self).__init__()
-        self.funasr_nano_decoder_embed = funasr_nano.llm.model.embed_tokens.float()
-        
-    def forward(self, input_ids):
-        return self.funasr_nano_decoder_embed(input_ids)
 
 
 class FUNASR_NANO_DECODER_MAIN(torch.nn.Module):
@@ -358,11 +346,10 @@ def export():
         num_layers = model.model.llm.config.num_hidden_layers
         vocab_size = model.model.llm.model.vocab_size
         hidden_size = model.model.llm.model.embed_tokens.embedding_dim
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
         
         # 1. Export Audio Encoder
         print(f"Exporting Encoder to {onnx_model_A} ...")
-        funasr_nano_encoder = FUNASR_NANO_ENCODER(model.model, custom_stft, NFFT_STFT, MAX_STFT_SIGNAL_LENGTH, N_MELS, SAMPLE_RATE, PRE_EMPHASIZE, LFR_M, LFR_N, LFR_LENGTH, tokenizer)
+        funasr_nano_encoder = FUNASR_NANO_ENCODER(model.model, custom_stft, NFFT_STFT, MAX_STFT_SIGNAL_LENGTH, N_MELS, SAMPLE_RATE, PRE_EMPHASIZE, LFR_M, LFR_N, LFR_LENGTH)
         audio = torch.ones((1, 1, MAX_INPUT_AUDIO_LENGTH), dtype=torch.int16)
         query_embed = torch.ones((1, 10, hidden_size), dtype=torch.float32)
         torch.onnx.export(
@@ -383,181 +370,13 @@ def export():
         del funasr_nano_encoder, audio, custom_stft
         gc.collect()
 
-        # 2. Export Decoder Embedder (for Prompt)
-        print(f"Exporting Decoder Embedder to {onnx_model_B} ...")
-        batch_size = 3 # 示例e
-        ids_len = torch.tensor([10], dtype=torch.long)      
-        history_len = torch.tensor([0], dtype=torch.long)
-        input_ids = torch.ones((1, ids_len), dtype=torch.int32)
-        hidden_states = torch.ones((batch_size, ids_len, hidden_size), dtype=torch.float32)
-        attention_mask = torch.tensor([1], dtype=torch.int8)
-        past_keys = torch.zeros((batch_size, num_key_value_heads, 1, head_dim, 0), dtype=torch.float32)
-        past_values = torch.zeros((batch_size, num_key_value_heads, 1, 0, head_dim), dtype=torch.float32)
-        kv_seq_len = history_len + ids_len
-
-        model_B = FUNASR_NANO_DECODER_EMBED(model.model)
-        torch.onnx.export(
-            model_B,
-            (input_ids,),
-            onnx_model_B,
-            input_names=['input_ids'],
-            output_names=['hidden_states'],
-            dynamic_axes={
-                'input_ids': {0: 'batch', 1: 'ids_len'},
-                'hidden_states': {0: 'batch', 1: 'ids_len'}
-            },
-            do_constant_folding=True,
-            opset_version=OPSET,
-            dynamo=False
-        )
-        del model_B, input_ids
-        
-        # # 3. Export Decoder Main
-        # print(f"Exporting Decoder Main to {onnx_model_C} ...")
-        # all_inputs = []
-        # input_names = []
-        # output_names = []
-        # dynamic_axes = {'hidden_states': {0: 'batch', 1: 'ids_len'}}
-        # for i in range(num_layers):
-        #     name = f'in_key_{i}'
-        #     input_names.append(name)
-        #     all_inputs.append(past_keys)
-        #     dynamic_axes[name] = {0: 'batch', 4: 'history_len'}
-        #     name = f'out_key_{i}'
-        #     output_names.append(name)
-        #     dynamic_axes[name] = {0: 'batch', 4: 'ks_seq_len'}
-        # for i in range(num_layers):
-        #     name = f'in_value_{i}'
-        #     input_names.append(name)
-        #     all_inputs.append(past_values)
-        #     dynamic_axes[name] = {0: 'batch', 3: 'history_len'}
-        #     name = f'out_value_{i}'
-        #     output_names.append(name)
-        #     dynamic_axes[name] = {0: 'batch', 3: 'ks_seq_len'}
-        # input_names.append('hidden_states')
-        # all_inputs.append(hidden_states)
-        # input_names.append('history_len')
-        # all_inputs.append(history_len)
-        # input_names.append('ids_len')
-        # all_inputs.append(ids_len)
-        # input_names.append('attention_mask')
-        # all_inputs.append(attention_mask)
-        # output_names.append('logits')
-        # output_names.append('kv_seq_len')
-        # dynamic_axes['logits'] = {0: 'batch'}
-
-        # model_C = FUNASR_NANO_DECODER_MAIN(model.model, MAX_SEQ_LEN, num_heads, num_key_value_heads, head_dim, num_layers)
-        # torch.onnx.export(
-        #     model_C,
-        #     tuple(all_inputs),
-        #     onnx_model_C,
-        #     input_names=input_names,
-        #     output_names=output_names,
-        #     dynamic_axes=dynamic_axes,
-        #     do_constant_folding=True,
-        #     opset_version=OPSET,
-        #     dynamo=False
-        # )
-        # del model_C, input_names, output_names, dynamic_axes, all_inputs
-        # gc.collect()
-        
-        # # 4. Export Greedy Search
-        # print(f"Exporting Greedy Search to {onnx_model_D} ...")
-        # greedy = GREEDY_SEARCH()
-        # beam_size = torch.tensor([BEAM_SIZE], dtype=torch.int64)
-        # repeat_penality = torch.ones((beam_size, vocab_size), dtype=torch.float32)
-        # logits = torch.ones((beam_size, vocab_size), dtype=torch.float32)
-        # penality_value = torch.tensor([REPEAT_PENALITY], dtype=torch.float32)
-
-        # torch.onnx.export(
-        #     greedy,
-        #     (logits, repeat_penality, penality_value, beam_size),
-        #     onnx_model_D,
-        #     input_names=['logits', 'repeat_penality_in', 'penality_value', 'batch_size'],
-        #     output_names=['max_logits_idx', 'repeat_penality_out'],
-        #     dynamic_axes={
-        #         'logits': {0: 'batch'},
-        #         'repeat_penality_in': {0: 'batch'},
-        #         'repeat_penality_out': {0: 'batch'},
-        #         'max_logits_idx': {0: 'batch'}
-        #     },
-        #     do_constant_folding=True,
-        #     opset_version=OPSET,
-        #     dynamo=False
-        # )
-        # del greedy
-
-        # print("Exporting Beam Search modules (Optional) ...")
-        # # (简单起见，这里也导出，反正脚本都写了)
-        # pass 
-        
         print('\nAll ONNX models exported successfully to:', OUTPUT_DIR)
         
-        # # 5. Clean up External Data (Optional but recommended)
-        # try:
-        #     import onnx
-        #     print("\nConsolidating external data for large models...")
-            
-        #     # 对 Decoder Main 进行整理
-        #     if os.path.exists(onnx_model_C):
-        #         print(f"Processing {onnx_model_C} ...")
-        #         model_c = onnx.load(onnx_model_C)
-        #         onnx.save_model(
-        #             model_c,
-        #             onnx_model_C,
-        #             save_as_external_data=True,
-        #             all_tensors_to_one_file=True,
-        #             location="FunASR_Nano_Decoder_Main.data",
-        #             size_threshold=1024,
-        #             convert_attribute=False
-        #         )
-        #         print(f"Consolidated external data to FunASR_Nano_Decoder_Main.data")
-                
-        #     # 对 Encoder 进行整理 (如果大于 2GB 也会有这个问题，虽然这里可能刚好没超，但整理一下更好)
-        #     if os.path.exists(onnx_model_A):
-        #          # 检查一下文件大小，如果很大才处理，或者统一处理
-        #          file_size = os.path.getsize(onnx_model_A)
-        #          if file_size > 100 * 1024 * 1024: # > 100MB
-        #             print(f"Processing {onnx_model_A} ...")
-        #             model_a = onnx.load(onnx_model_A)
-        #             onnx.save_model(
-        #                 model_a,
-        #                 onnx_model_A,
-        #                 save_as_external_data=True,
-        #                 all_tensors_to_one_file=True,
-        #                 location="FunASR_Nano_Encoder.data",
-        #                 size_threshold=1024,
-        #                 convert_attribute=False
-        #             )
-        #             print(f"Consolidated external data to FunASR_Nano_Encoder.data")
-
-        # except ImportError:
-        #     print("Warning: 'onnx' library not found. Skipping external data consolidation.")
-        #     print("To enable cleaner output, please install onnx: pip install onnx")
-        # except Exception as e:
-        #     import traceback
-        #     traceback.print_exc()
-        #     print(f"Error during consolidation: {e}")
-
-        # # 6. Delete Residual Files (The ones created by torch.onnx.export)
-        # # 只有在上面的整理步骤成功后，或者确认存在 .data 文件时才执行删除，避免误删
-        # print("\nCleaning up residual external data files...")
-        # cleanup_count = 0
-        # for filename in os.listdir(OUTPUT_DIR):
-        #     if filename.startswith("onnx__MatMul_"):
-        #         file_path = os.path.join(OUTPUT_DIR, filename)
-        #         try:
-        #             os.remove(file_path)
-        #             cleanup_count += 1
-        #         except OSError as e:
-        #             print(f"Error deleting {filename}: {e}")
-        
-        # if cleanup_count > 0:
-        #     print(f"Deleted {cleanup_count} residual external weight files.")
-        # else:
-        #     print("No residual files found or deleted.")
-
     print('\nExport flow finished.')
+
+if __name__ == "__main__":
+    export()
+
 
 if __name__ == "__main__":
     export()
