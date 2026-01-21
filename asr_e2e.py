@@ -1,42 +1,40 @@
-"""
-端到端 ASR 推理脚本 (End-to-End ASR Inference)
-
-流程:
-1. 加载音频文件 (MP3/WAV/etc) -> PCM 16kHz
-2. ONNX Encoder: 音频 -> Audio Embedding
-3. 从 GGUF 读取 token_embd.weight，生成 prefix/suffix embedding
-4. 拼接 [prefix + audio + suffix]
-5. llama.dll 直接注入 embedding 并生成文本
-
-依赖:
-- onnxruntime
-- pydub (音频处理)
-- gguf (读取 GGUF 模型权重)
-- llama.dll / ggml.dll (推理)
-"""
-
 import ctypes
 import os
 import time
+from pathlib import Path
 
 import gguf
 import numpy as np
 
+
 # =========================================================================
 # 设置 FFmpeg 路径
 # =========================================================================
-ffmpeg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg")
-if os.path.exists(ffmpeg_dir):
-    os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
+def setup_ffmpeg():
+    """设置 FFmpeg 路径和配置"""
+    ffmpeg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg")
+    if os.path.exists(ffmpeg_dir):
+        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
 
-    # 配置 pydub 使用本地 ffmpeg
+        # 导入并配置 pydub
+        from pydub import AudioSegment
 
-    if os.name == "nt":  # Windows
-        AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg.exe")
-        AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
-    else:  # Linux/MacOS
-        AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg")
-        AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg")
+        if os.name == "nt":  # Windows
+            AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+            AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
+        else:  # Linux/MacOS
+            AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg")
+            AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg")
+
+        print(f"[INFO] FFmpeg 已配置: {ffmpeg_dir}")
+        return True
+    else:
+        print(f"[WARNING] FFmpeg 目录不存在: {ffmpeg_dir}")
+        return False
+
+
+# 执行 FFmpeg 设置
+setup_ffmpeg()
 
 # =========================================================================
 
@@ -64,17 +62,16 @@ DECODER_GGUF_PATH = os.path.join(MODEL_DIR, "Fun-ASR-Nano-Decoder.q8_0.gguf")
 # 下载地址：https://github.com/ggml-org/llama.cpp/releases/download/b7786/llama-b7786-bin-win-vulkan-x64.zip
 BIN_DIR = os.path.join(SCRIPT_DIR, "bin")
 GGML_DLL_PATH = os.path.join(BIN_DIR, "ggml.dll")
-LLAMA_DLL_PATH = os.path.join(BIN_DIR, "llama.dll")
+LLAMA_DLL_PATH = os.path.join(BIN_DIR, "llama.dll")  # 修正拼写错误
 GGML_BASE_DLL_PATH = os.path.join(BIN_DIR, "ggml-base.dll")
 
-# 输入音频
-INPUT_AUDIO = os.path.join(SCRIPT_DIR, "input.mp3")
-
+# 输入音频目录
+TEST_WAVS_DIR = os.path.join(SCRIPT_DIR, "test_wavs")
 
 # ASR Prompts
 hotwords = "睡前消息, Claude Code"
 PREFIX_PROMPT = (
-    "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
+    " <|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
 )
 PREFIX_PROMPT += "请结合上下文信息，更加准确地完成语音转写任务。如果没有相关信息，我们会留空。\n\n\n**上下文信息：**\n\n\n"
 PREFIX_PROMPT += f"热词列表：[{hotwords}]\n"
@@ -728,6 +725,76 @@ def run_generation(ctx, vocab, eos_token, n_input_tokens):
     return generated_text, tokens_generated, t_cost
 
 
+def single_run(ort_session, model, vocab, eos_token, embedding_table, audio_path):
+    """单次运行ASR处理，返回处理时间和音频长度用于计算RTF"""
+    # 4. 准备提示词 (Prompts)
+    prefix_embd, suffix_embd, n_prefix, n_suffix = prepare_prompt_embeddings(
+        vocab, embedding_table
+    )
+    if prefix_embd is None:
+        return None
+
+    # 5. 处理音频
+    audio_embd, audio_len, t_encode_audio = process_audio_file(audio_path, ort_session)
+    if np.isnan(audio_embd).any():
+        print("    [WARNING] Audio embedding contains NaN!")
+
+    # 6. 拼接 (Concatenate)
+    print("\n[6] 拼接 embeddings [prefix + audio + suffix]...")
+    full_embd = np.concatenate(
+        [prefix_embd, audio_embd.astype(np.float32), suffix_embd], axis=0
+    )
+    n_input_tokens = full_embd.shape[0]
+    print(f"    总 embedding: {full_embd.shape}")
+
+    # 7. 创建上下文并注入 (Setup Context & Inject)
+    ctx, t_inject = setup_inference_context(model, full_embd, n_input_tokens)
+    if not ctx:
+        return None
+
+    # 8. 生成 (Generate)
+    text, n_gen, t_gen = run_generation(ctx, vocab, eos_token, n_input_tokens)
+
+    # 清理 (Cleanup)
+    llama_free(ctx)
+
+    # 计算总处理时间
+    total_processing_time = t_encode_audio + t_inject + t_gen
+    audio_duration = audio_len / SAMPLE_RATE  # 音频时长（秒）
+    rtf = total_processing_time / audio_duration if audio_duration > 0 else float("inf")
+
+    return {
+        "processing_time": total_processing_time,
+        "audio_duration": audio_duration,
+        "rtf": rtf,
+        "text": text,
+        "n_gen": n_gen,
+        "t_gen": t_gen,
+        "audio_path": audio_path,
+    }
+
+
+def get_audio_files(directory):
+    """获取目录下所有支持的音频文件"""
+    supported_formats = (
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".m4a",
+        ".aac",
+        ".ogg",
+        ".wma",
+        ".opus",
+    )
+    audio_files = []
+
+    for file in Path(directory).iterdir():
+        if file.is_file() and file.suffix.lower() in supported_formats:
+            audio_files.append(str(file))
+
+    return sorted(audio_files)
+
+
 # =========================================================================
 # 主函数 (Main)
 # =========================================================================
@@ -755,61 +822,82 @@ def main():
     if embedding_table is None:
         return 1
 
-    # 4. 准备提示词 (Prompts)
-    prefix_embd, suffix_embd, n_prefix, n_suffix = prepare_prompt_embeddings(
-        vocab, embedding_table
-    )
-    if prefix_embd is None:
-        return 1
-
     print("\n" + "=" * 70)
     print("模型加载完成，准备处理音频...")
     print("=" * 70)
 
-    # 5. 处理音频
-    audio_embd, audio_len, t_encode_audio = process_audio_file(INPUT_AUDIO, ort_session)
-    if np.isnan(audio_embd).any():
-        print("    [WARNING] Audio embedding contains NaN!")
-
-    # 6. 拼接 (Concatenate)
-    print("\n[6] 拼接 embeddings [prefix + audio + suffix]...")
-    full_embd = np.concatenate(
-        [prefix_embd, audio_embd.astype(np.float32), suffix_embd], axis=0
-    )
-    n_input_tokens = full_embd.shape[0]
-    print(f"    总 embedding: {full_embd.shape}")
-
-    # 7. 创建上下文并注入 (Setup Context & Inject)
-    ctx, t_inject = setup_inference_context(model, full_embd, n_input_tokens)
-    if not ctx:
+    # 获取 test_wavs 目录下的所有音频文件
+    if not os.path.exists(TEST_WAVS_DIR):
+        print(f"错误: 音频目录不存在: {TEST_WAVS_DIR}")
         return 1
 
-    # 8. 生成 (Generate)
-    text, n_gen, t_gen = run_generation(ctx, vocab, eos_token, n_input_tokens)
+    audio_files = get_audio_files(TEST_WAVS_DIR)
+    if not audio_files:
+        print(f"错误: 在 {TEST_WAVS_DIR} 目录下没有找到音频文件")
+        return 1
 
-    # 9. 统计 (Stats)
-    tps = n_gen / t_gen if t_gen > 0 else 0
-    t_total = t_encode_audio + t_inject + t_gen
+    print(f"\n发现 {len(audio_files)} 个音频文件:")
+    for i, file in enumerate(audio_files):
+        print(f"  {i + 1}. {os.path.basename(file)}")
 
-    print("\n[结果]")
-    print(f"  转录文本: {text}")
-    print("\n[统计]")
-    print(f"  音频长度: {audio_len / SAMPLE_RATE:.2f}s")
-    print(
-        f"  Decoder输入: {n_input_tokens} (prefix:{n_prefix}, audio:{audio_embd.shape[0]}, suffix:{n_suffix})"
-    )
-    print(f"  Decoder输出: {tps:.2f} tokens/s ({n_gen} in {t_gen:.2f}s)")
-    print("\n[耗时]")
-    print(f"  - Encoder加载:   {t_load_enc * 1000:5.0f}ms")
-    print(f"  - Decoder加载:   {t_load_dec * 1000:5.0f}ms")
-    print(f"  - Embd   加载:   {t_load_embd * 1000:5.0f}ms")
-    print(f"  - Encoder生成:   {t_encode_audio * 1000:5.0f}ms")
-    print(f"  - Decoder读取:   {t_inject * 1000:5.0f}ms")
-    print(f"  - Decoder生成:   {t_gen * 1000:5.0f}ms")
-    print(f"  - 转录总耗时:      {t_total:5.2f}s")
+    # 处理每个音频文件
+    all_results = []
 
-    # 清理 (Cleanup)
-    llama_free(ctx)
+    print("\n开始处理所有音频文件...")
+
+    for i, audio_file in enumerate(audio_files):
+        print(
+            f"\n处理第 {i + 1}/{len(audio_files)} 个音频: {os.path.basename(audio_file)}"
+        )
+
+        # 单次运行
+        result = single_run(
+            ort_session, model, vocab, eos_token, embedding_table, audio_file
+        )
+        if result is not None:
+            all_results.append(result)
+            print(
+                f"  完成 - RTF: {result['rtf']:.3f}, 音频时长: {result['audio_duration']:.2f}s, 处理时间: {result['processing_time']:.2f}s"
+            )
+        else:
+            print(f"  失败 - {audio_file}")
+
+    # 计算统计信息
+    if all_results:
+        rtf_values = [r["rtf"] for r in all_results]
+        processing_times = [r["processing_time"] for r in all_results]
+        audio_durations = [r["audio_duration"] for r in all_results]
+        generation_times = [r["t_gen"] for r in all_results]
+
+        avg_rtf = sum(rtf_values) / len(rtf_values)
+        min_rtf = min(rtf_values)
+        max_rtf = max(rtf_values)
+
+        avg_proc_time = sum(processing_times) / len(processing_times)
+        avg_gen_time = sum(generation_times) / len(generation_times)
+        total_audio_duration = sum(audio_durations)
+
+        print("\n" + "=" * 70)
+        print(f"总体统计结果 (基于 {len(all_results)} 个音频文件):")
+        print(f"  总音频时长: {total_audio_duration:.2f}s")
+        print(f"  平均 RTF: {avg_rtf:.3f}")
+        print(f"  最小 RTF: {min_rtf:.3f}")
+        print(f"  最大 RTF: {max_rtf:.3f}")
+        print(f"  平均处理时间: {avg_proc_time:.2f}s")
+        print(f"  平均生成时间: {avg_gen_time:.2f}s")
+        print(f"  RTF 标准差: {np.std(rtf_values):.3f}")
+
+        print("\n各音频详细结果:")
+        print("-" * 70)
+        for i, result in enumerate(all_results):
+            filename = os.path.basename(result["audio_path"])
+            print(
+                f"  {i + 1:2d}. {filename:<30} RTF: {result['rtf']:>6.3f}, 时长: {result['audio_duration']:>6.2f}s"
+            )
+
+        print("=" * 70)
+
+    # 清理模型
     llama_model_free(model)
     llama_backend_free()
 
