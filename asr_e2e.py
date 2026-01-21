@@ -15,12 +15,12 @@
 - llama.dll / ggml.dll (推理)
 """
 
-import sys
-import os
 import ctypes
-import numpy as np
+import os
 import time
+
 import gguf
+import numpy as np
 
 # =========================================================================
 # 设置 FFmpeg 路径
@@ -30,7 +30,6 @@ if os.path.exists(ffmpeg_dir):
     os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
 
     # 配置 pydub 使用本地 ffmpeg
-    from pydub.utils import which
 
     if os.name == "nt":  # Windows
         AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg.exe")
@@ -77,7 +76,7 @@ hotwords = "睡前消息, Claude Code"
 PREFIX_PROMPT = (
     "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
 )
-PREFIX_PROMPT += f"请结合上下文信息，更加准确地完成语音转写任务。如果没有相关信息，我们会留空。\n\n\n**上下文信息：**\n\n\n"
+PREFIX_PROMPT += "请结合上下文信息，更加准确地完成语音转写任务。如果没有相关信息，我们会留空。\n\n\n**上下文信息：**\n\n\n"
 PREFIX_PROMPT += f"热词列表：[{hotwords}]\n"
 PREFIX_PROMPT += "\n语音转写：\n"
 SUFFIX_PROMPT = "\n<|im_end|>\n<|im_start|>assistant"
@@ -552,7 +551,7 @@ def load_onnx_model():
 
 def load_gguf_model():
     """步骤 2: 加载 GGUF LLM 解码器"""
-    print(f"\n[2] 加载 GGUF LLM Decoder")
+    print("\n[2] 加载 GGUF LLM Decoder")
     t_start = time.perf_counter()
 
     llama_backend_init()
@@ -792,15 +791,15 @@ def main():
     tps = n_gen / t_gen if t_gen > 0 else 0
     t_total = t_encode_audio + t_inject + t_gen
 
-    print(f"\n[结果]")
+    print("\n[结果]")
     print(f"  转录文本: {text}")
-    print(f"\n[统计]")
+    print("\n[统计]")
     print(f"  音频长度: {audio_len / SAMPLE_RATE:.2f}s")
     print(
         f"  Decoder输入: {n_input_tokens} (prefix:{n_prefix}, audio:{audio_embd.shape[0]}, suffix:{n_suffix})"
     )
     print(f"  Decoder输出: {tps:.2f} tokens/s ({n_gen} in {t_gen:.2f}s)")
-    print(f"\n[耗时]")
+    print("\n[耗时]")
     print(f"  - Encoder加载:   {t_load_enc * 1000:5.0f}ms")
     print(f"  - Decoder加载:   {t_load_dec * 1000:5.0f}ms")
     print(f"  - Embd   加载:   {t_load_embd * 1000:5.0f}ms")
