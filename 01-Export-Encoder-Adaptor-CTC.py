@@ -24,6 +24,7 @@ import torch
 import torchaudio
 import numpy as np
 import onnxruntime
+import onnx
 from onnxruntime.quantization import quantize_dynamic, QuantType
 import base64
 from pathlib import Path
@@ -305,9 +306,7 @@ class CTCHeadExportWrapper(torch.nn.Module):
         logits = self.ctc_proj.ctc_lo(h)
         return logits
 
-# =========================================================================
-# Vocabulary Generation
-# =========================================================================
+
 
 def generate_sensevoice_vocab(tiktoken_path):
     print(f"Generating vocabulary from {tiktoken_path}...")
@@ -344,12 +343,43 @@ def generate_sensevoice_vocab(tiktoken_path):
     tokens.append(base64.b64encode("<blk>".encode()).decode())
     return tokens
 
+    
 # =========================================================================
-# Main Export Routine
+# Utils: Merge .data file back to .onnx
 # =========================================================================
 
+def merge_onnx_file(model_path):
+    """
+    Loads an ONNX model (which loads external data automatically), 
+    and saves it back to the same path. ONNX 1.16+ defaults to saving 
+    as a single file if < 2GB.
+    """
+    print(f"   [Merge] Merging external data for {os.path.basename(model_path)}...")
+    data_file = model_path + ".data"
+    
+    try:
+        # onnx.load automatically reads the .data file if present
+        model = onnx.load(model_path)
+        
+        # onnx.save writes a single file by default if it fits
+        onnx.save(model, model_path)
+        print(f"   [Merge] Successfully embedded weights into {os.path.basename(model_path)}")
+        
+        # Cleanup
+        if os.path.exists(data_file):
+            try:
+                os.remove(data_file)
+                print(f"   [Cleanup] Deleted external data file: {os.path.basename(data_file)}")
+            except:
+                pass
+                
+    except Exception as e:
+        print(f"   [Warning] Merge failed: {e}")
+
+
 def main():
-    print("\n[Hybrid Export] Initializing Encoder-Adaptor System...")
+    print("\n[Hybrid Export - DYNAMO ENABLED] Initializing Encoder-Adaptor System...")
+    # ... (Initialization code omitted - same as before) ...
     tiktoken_path = os.path.join(model_dir, "multilingual.tiktoken")
     if os.path.exists(tiktoken_path):
         tokens = generate_sensevoice_vocab(tiktoken_path)
@@ -358,8 +388,7 @@ def main():
     else:
         print("Warning: tiktoken file not found, vocab generation skipped.")
         tokens = ["dummy"] * 60515 
-
-    # Load model to CPU explicitly
+    
     hybrid = HybridSenseVoice(vocab_size=len(tokens))
     hybrid.load_weights(weight_path)
     hybrid.eval()
@@ -367,10 +396,9 @@ def main():
     custom_stft = STFT_Process(model_type='stft_B', n_fft=NFFT_STFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE).eval()
 
     with torch.no_grad():
-        print(f"\n[1/4] Exporting Dual-Output Encoder (LFR={LFR_N}, Downsample={DOWNSAMPLE_RATE})...")
+        print(f"\n[1/4] Exporting Dual-Output Encoder (Dynamo=True)...")
         enc_wrapper = EncoderExportWrapper(hybrid, custom_stft, lfr_m=LFR_M, lfr_n=LFR_N)
         
-        # Audio input (1s)
         audio = torch.randn(1, 1, SAMPLE_RATE * 1, dtype=torch.float32) 
         
         torch.onnx.export(
@@ -383,22 +411,19 @@ def main():
                 'adaptor_output': {1: 'adaptor_len'}
             },
             opset_version=OPSET,
-            dynamo=False  # Explicitly use legacy exporter to keep single file
+            dynamo=True
         )
         print(f"Saved to: {onnx_encoder_fp32}")
+        merge_onnx_file(onnx_encoder_fp32)
 
-        print(f"\n[2/4] Exporting CTC Head...")
-        # Clean up potential leftover .data files if they exist from previous runs
+        print(f"\n[2/4] Exporting CTC Head (Dynamo=True)...")
+        # Cleanup potential previous .data file
         data_file = onnx_ctc_fp32 + ".data"
         if os.path.exists(data_file):
-            try:
-                os.remove(data_file)
-                print(f"Removed stale data file: {data_file}")
-            except OSError:
-                pass
+            try: os.remove(data_file)
+            except: pass
 
-        ctc_wrapper = CTCHeadExportWrapper(hybrid)
-        # Dummy input must match encoder output dim (512)
+        ctc_wrapper = CTCHeadExportWrapper(hybrid) # Using unified wrapper logic
         dummy_enc = torch.randn(1, 100, 512)
         
         torch.onnx.export(
@@ -406,9 +431,10 @@ def main():
             input_names=['enc_output'], output_names=['logits'],
             dynamic_axes={'enc_output': {1: 'enc_len'}, 'logits': {1: 'enc_len'}},
             opset_version=OPSET,
-            dynamo=False # FIXED: Forces single file output (avoiding .data split)
+            dynamo=True
         )
         print(f"Saved to: {onnx_ctc_fp32}")
+        merge_onnx_file(onnx_ctc_fp32)
 
         print("\n[3/4] Quantizing Encoder...")
         quantize_dynamic(onnx_encoder_fp32, onnx_encoder_int8, op_types_to_quantize=["MatMul"], per_channel=True, reduce_range=False, weight_type=QuantType.QUInt8)
