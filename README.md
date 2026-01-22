@@ -48,7 +48,7 @@ python 01_Export_ONNX.py
 ```
 
 *   **功能**：加载 FunASR 模型，提取音频编码器（Encoder）和 Embedding层，导出为 ONNX 格式。
-*   **输出**：`model-gguf/` 目录下的 `.onnx` 文件。
+*   **输出**：`model/` 目录下的 `.onnx` 文件。
 
 ### 第二步：导出 GGUF 模型 (LLM Decoder)
 
@@ -61,7 +61,7 @@ python 02_Export_GGUF.py
 *   **功能**：
     1.  提取 LLM 部分的权重，保存为 Hugging Face 标准格式（Safetensors）。
     2.  调用 `llama.cpp` 的转换工具，将 HF 模型转换为 GGUF 格式。
-*   **输出**：`model-gguf/qwen3-0.6b-asr.gguf`
+*   **输出**：`model/qwen3-0.6b-asr.gguf`
 
 ### 第三步：运行推理
 
@@ -81,7 +81,7 @@ python 03_Inference.py
 
 ## 目录结构说明
 
-执行完上述步骤后，`model-gguf` 文件夹将包含完整的推理所需文件：
+执行完上述步骤后，`model` 文件夹将包含完整的推理所需文件：
 
 *   `FunASR_Nano_Encoder.onnx` : 音频编码器
 *   `FunASR_Nano_Decoder_Embed.onnx` : 文本 Embedder

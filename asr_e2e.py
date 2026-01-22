@@ -26,10 +26,10 @@ import numpy as np
 import time
 
 # Modules
-import nano_llama # Import entire module to access initialized globals
-from nano_ctc import load_ctc_tokens, decode_ctc, align_timestamps
-from nano_audio import load_audio
-from nano_onnx import load_onnx_models, encode_audio
+from lib import nano_llama # Import entire module to access initialized globals
+from lib.nano_ctc import load_ctc_tokens, decode_ctc, align_timestamps
+from lib.nano_audio import load_audio
+from lib.nano_onnx import load_onnx_models, encode_audio
 
 from hotword.hot_phoneme import PhonemeCorrector
 
@@ -74,14 +74,11 @@ LANGUAGE = None
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 模型路径
-MODEL_DIR           = os.path.join(SCRIPT_DIR, "model-gguf")
+MODEL_DIR           = os.path.join(SCRIPT_DIR, "model")
 ENCODER_ONNX_PATH   = os.path.join(MODEL_DIR, "Fun-ASR-Nano-Encoder-Adaptor.fp32.onnx")  
 CTC_ONNX_PATH       = os.path.join(MODEL_DIR, "Fun-ASR-Nano-CTC.int8.onnx")
 DECODER_GGUF_PATH   = os.path.join(MODEL_DIR, "Fun-ASR-Nano-Decoder.q8_0.gguf")
 TOKENS_PATH         = os.path.join(MODEL_DIR, "tokens.txt")
-
-# llama.cpp DLL 目录
-BIN_DIR             = os.path.join(SCRIPT_DIR, "bin")
 
 # 音频参数
 SAMPLE_RATE = 16000
@@ -108,7 +105,7 @@ def load_gguf_model_wrapper():
     t_start = time.perf_counter()
     
     # Initialize Llama Library
-    nano_llama.init_llama_lib(BIN_DIR)
+    nano_llama.init_llama_lib()
     
     model_params = nano_llama.llama_model_default_params()
     model = nano_llama.llama_model_load_from_file(DECODER_GGUF_PATH.encode('utf-8'), model_params)

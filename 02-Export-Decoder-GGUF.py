@@ -14,25 +14,16 @@ SOURCE_MODEL_PATH = './Fun-ASR-Nano-2512'
 CONFIG_PATH = f'{SOURCE_MODEL_PATH}/Qwen3-0.6B/config.json'
 
 # 中间产物 (HF 格式) 输出路径
-OUTPUT_HF_DIR = './model-gguf/Qwen3-0.6B'
+OUTPUT_HF_DIR = './model/Qwen3-0.6B'
 # Tokenizer 输出路径
-OUTPUT_TOKENIZER_DIR = './model-gguf/Qwen3-0.6B'
+OUTPUT_TOKENIZER_DIR = './model/Qwen3-0.6B'
 
 # 最终 GGUF 输出文件
-OUTPUT_GGUF_FILE_FP16 = './model-gguf/Fun-ASR-Nano-Decoder.fp16.gguf'
-OUTPUT_GGUF_FILE_INT8 = './model-gguf/Fun-ASR-Nano-Decoder.q8_0.gguf'
+OUTPUT_GGUF_FILE_FP16 = './model/Fun-ASR-Nano-Decoder.fp16.gguf'
+OUTPUT_GGUF_FILE_INT8 = './model/Fun-ASR-Nano-Decoder.q8_0.gguf'
 
-# Llama.cpp 路径 (自动寻找 convert_hf_to_gguf.py)
-# 优先尝试 llama.cpp 目录，如果不存在尝试 llama.cpp-master
-if os.path.exists('./llama.cpp/convert_hf_to_gguf.py'):
-    LLAMA_CPP_PATH = './llama.cpp'
-elif os.path.exists('./llama.cpp-master/convert_hf_to_gguf.py'):
-    LLAMA_CPP_PATH = './llama.cpp-master'
-else:
-    # Fallback to current directory or error later
-    LLAMA_CPP_PATH = './llama.cpp' 
-
-CONVERT_SCRIPT = f'{LLAMA_CPP_PATH}/convert_hf_to_gguf.py'
+# 转换脚本路径 (使用 lib 目录下的 convert_hf_to_gguf.py)
+CONVERT_SCRIPT = './lib/convert_hf_to_gguf.py'
 
 
 def main():
@@ -113,27 +104,13 @@ def main():
     # 2. 转换为 GGUF 格式 (FP16 & Int8)
     # ---------------------------------------------------------------------
     print("\n[Stage 2] Converting HF model to GGUF...")
-    
+
     if not os.path.exists(CONVERT_SCRIPT):
-        print(f"Error: Llama.cpp conversion script not found at {CONVERT_SCRIPT}")
-        # Try finding it
-        print("Attempting to locate convert_hf_to_gguf.py ...")
-        # simple search
-        possible_paths = [
-            './llama.cpp/convert_hf_to_gguf.py',
-            './llama.cpp-master/convert_hf_to_gguf.py',
-            './llama.cpp/llama.cpp/convert_hf_to_gguf.py'
-        ]
-        for p in possible_paths:
-            if os.path.exists(p):
-                print(f"Found at {p}")
-                con_script = p
-                break
-        else:
-             print("Could not find conversion script. Please check your llama.cpp installation.")
-             return
-    else:
-        con_script = CONVERT_SCRIPT
+        print(f"Error: Conversion script not found at {CONVERT_SCRIPT}")
+        print("Please ensure convert_hf_to_gguf.py is in the lib directory.")
+        return
+
+    con_script = CONVERT_SCRIPT
 
     # 定义转换任务列表: (输出路径, 量化类型)
     tasks = [

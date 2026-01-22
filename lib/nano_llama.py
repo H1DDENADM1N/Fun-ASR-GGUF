@@ -115,7 +115,8 @@ llama_vocab_n_tokens = None
 llama_vocab_eos = None
 llama_token_to_piece = None
 
-def init_llama_lib(bin_dir):
+def init_llama_lib():
+    """初始化 llama.cpp 库，自动从模块所在目录加载 DLL"""
     global llama, ggml, ggml_base
     global llama_log_set, llama_backend_init, llama_backend_free
     global llama_model_default_params, llama_model_load_from_file, llama_model_free, llama_model_get_vocab
@@ -124,13 +125,16 @@ def init_llama_lib(bin_dir):
     global llama_decode, llama_get_logits, llama_tokenize
     global llama_vocab_n_tokens, llama_vocab_eos, llama_token_to_piece
     global _log_callback_ref
-    
-    GGML_DLL_PATH = os.path.join(bin_dir, "ggml.dll")
-    LLAMA_DLL_PATH = os.path.join(bin_dir, "llama.dll")
-    GGML_BASE_DLL_PATH = os.path.join(bin_dir, "ggml-base.dll")
+
+    # 获取模块所在目录
+    lib_dir = os.path.dirname(os.path.abspath(__file__))
+
+    GGML_DLL_PATH = os.path.join(lib_dir, "ggml.dll")
+    LLAMA_DLL_PATH = os.path.join(lib_dir, "llama.dll")
+    GGML_BASE_DLL_PATH = os.path.join(lib_dir, "ggml-base.dll")
 
     original_cwd = os.getcwd()
-    os.chdir(bin_dir)
+    os.chdir(lib_dir)
     try:
         ggml = ctypes.CDLL(GGML_DLL_PATH)
         ggml_base = ctypes.CDLL(GGML_BASE_DLL_PATH)

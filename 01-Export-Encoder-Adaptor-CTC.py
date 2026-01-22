@@ -31,17 +31,14 @@ from pathlib import Path
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Add rknn to search path for model definitions
-sys.path.insert(0, str(Path(__file__).cwd() / "rknn"))
-
-import torch_model
-from STFT_Process import STFT_Process
+# Import local model dependencies (standalone - no rknn folder needed)
+import export_torch_model as torch_model
 
 # =========================================================================
 # Configuration
 # =========================================================================
 
-OUTPUT_DIR = r'./model-gguf'
+OUTPUT_DIR = r'./model'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 model_dir = r'./Fun-ASR-Nano-2512'
@@ -393,7 +390,7 @@ def main():
     hybrid.load_weights(weight_path)
     hybrid.eval()
     
-    custom_stft = STFT_Process(model_type='stft_B', n_fft=NFFT_STFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE).eval()
+    custom_stft = torch_model.STFT_Process(model_type='stft_B', n_fft=NFFT_STFT, win_length=WINDOW_LENGTH, hop_len=HOP_LENGTH, max_frames=0, window_type=WINDOW_TYPE).eval()
 
     with torch.no_grad():
         print(f"\n[1/4] Exporting Dual-Output Encoder (Dynamo=True)...")
