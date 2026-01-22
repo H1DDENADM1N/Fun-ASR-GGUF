@@ -70,7 +70,7 @@ LLAMA_DLL_PATH = os.path.join(BIN_DIR, "llama.dll")
 GGML_BASE_DLL_PATH = os.path.join(BIN_DIR, "ggml-base.dll")
 
 # 输入音频
-INPUT_AUDIO = os.path.join(SCRIPT_DIR, "input2.mp3")
+INPUT_AUDIO = os.path.join(SCRIPT_DIR, "input.mp3")
 
 # ASR Prompts
 # 默认热词表（在本例中用于简单匹配）
