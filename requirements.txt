@@ -2,7 +2,8 @@ torch
 torchaudio 
 transformers 
 numpy 
+onnx
 onnxruntime 
+gguf
 funasr
-llama-cpp-python
 pydub
