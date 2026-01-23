@@ -3,53 +3,20 @@ ASR 演示脚本 - 简单直接的使用示例
 """
 
 import os
-
 from fun_asr_gguf import create_asr_engine
-
-
-# =========================================================================
-# 设置 FFmpeg 路径
-# =========================================================================
-def setup_ffmpeg():
-    """设置 FFmpeg 路径和配置"""
-    ffmpeg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg")
-    if os.path.exists(ffmpeg_dir):
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
-
-        # 导入并配置 pydub
-        from pydub import AudioSegment
-
-        if os.name == "nt":  # Windows
-            AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg.exe")
-            AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg.exe")
-        else:  # Linux/MacOS
-            AudioSegment.converter = os.path.join(ffmpeg_dir, "ffmpeg")
-            AudioSegment.ffmpeg = os.path.join(ffmpeg_dir, "ffmpeg")
-
-        print(f"[INFO] FFmpeg 已配置: {ffmpeg_dir}")
-        return True
-    else:
-        print(f"[WARNING] FFmpeg 目录不存在: {ffmpeg_dir}")
-        return False
-
-
-# 执行 FFmpeg 设置
-setup_ffmpeg()
 
 
 # ==================== Vulkan 选项 ====================
 
-# os.environ["VK_ICD_FILENAMES"] = "none"  # 禁止 Vulkan
-# os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"  # 禁止 Vulkan 用独显（强制用集显）
-# os.environ["GGML_VK_DISABLE_F16"] = (
-#     "1"  # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
-# )
+# os.environ["VK_ICD_FILENAMES"] = "none"       # 禁止 Vulkan
+# os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"   # 禁止 Vulkan 用独显（强制用集显）
+# os.environ["GGML_VK_DISABLE_F16"] = "1"       # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
 
 
 # ==================== 配置区域 ====================
 
 # 音频文件路径
-audio_file = "input.mp3"
+audio_file = "input5.mp3"
 
 # 语言设置（None=自动检测, "中文", "英文", "日文" 等）
 language = None
@@ -89,11 +56,11 @@ Fun-ASR-MLT-Nano-2512
 
 # ==================== 执行区域 ====================
 
-
 def main():
-    print("=" * 70)
+
+    print("="*70)
     print("ASR 语音识别")
-    print("=" * 70)
+    print("="*70)
 
     # 创建 ASR 引擎
     engine = create_asr_engine(
@@ -101,28 +68,40 @@ def main():
         ctc_onnx_path=ctc_onnx_path,
         decoder_gguf_path=decoder_gguf_path,
         tokens_path=tokens_path,
-        hotwords_path=hotwords_path,
+        hotwords_path=hotwords_path, 
+        similar_threshold=0.6, 
+        max_hotwords=10, 
         enable_ctc=enable_ctc,
         verbose=verbose,
     )
 
-    # 转录音频
+    print(f'\n预跑一遍，分配内存......\n')
     result = engine.transcribe(
-        audio_file, language=language, context=context, verbose=verbose
+        audio_file, 
+        language=language, 
+        context=context, 
+        verbose=False, 
+        duration=10.0,
     )
 
-    input("回车继续")
     result = engine.transcribe(
-        audio_file, language=language, context=context, verbose=verbose
+        audio_file, 
+        language=language, 
+        context=context, 
+        verbose=verbose,
+        segment_size=60.0,
+        overlap=4.0,
+        start_second=0.0,
+        duration=300.0,
+        srt=True
     )
 
     # 输出结果
     if json_output:
         import json
-
-        print("\n" + "=" * 70)
+        print("\n" + "="*70)
         print("识别结果 (JSON)")
-        print("=" * 70)
+        print("="*70)
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
     # 清理资源

@@ -9,6 +9,8 @@ def load_onnx_models(encoder_path, ctc_path):
     
     t_start = time.perf_counter()
     session_opts = onnxruntime.SessionOptions()
+    session_opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    session_opts.add_session_config_entry("session.inter_op.allow_spinning", "0")
     session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
     
     encoder_sess = onnxruntime.InferenceSession(
@@ -24,9 +26,6 @@ def load_onnx_models(encoder_path, ctc_path):
     )
     
     t_cost = time.perf_counter() - t_start
-    print(f"    Encoder: {os.path.basename(encoder_path)}")
-    print(f"    CTC Head: {os.path.basename(ctc_path)}")
-    print(f"    ONNX Models Loaded in {t_cost:.2f}s")
     
     return encoder_sess, ctc_sess, t_cost
 

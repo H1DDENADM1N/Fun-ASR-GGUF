@@ -6,12 +6,19 @@ numpy
 pydub 
 gguf
 
+rich
+watchdog
+pypinyin
+srt
+
 # ==================== 模型导出依赖 ====================
 
 torch 
 torchaudio 
 transformers 
 onnxruntime 
+onnxscript
+sentencepiece
 modelscope
 
 # ==================== 注意事项 ====================
