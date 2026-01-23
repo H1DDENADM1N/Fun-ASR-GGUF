@@ -35,5 +35,5 @@ url = "https://mirrors.ustc.edu.cn/pypi/simple"
 default = true
 
 [project.urls]
-Repository = "https://github.com/HaujetZhao/FunASR-nano-onnx-gguf"
-Issues = "https://github.com/HaujetZhao/FunASR-nano-onnx-gguf/issues"
+Repository = "https://github.com/HaujetZhao/Fun-ASR-GGUF"
+Issues = "https://github.com/HaujetZhao/Fun-ASR-GGUF/issues"
