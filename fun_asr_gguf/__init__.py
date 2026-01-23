@@ -10,7 +10,7 @@ from .asr_engine import (
     FunASREngine,
     create_asr_engine,
 )
-from .types import (
+from .custom_types import (
     RecognitionResult,
     RecognitionStream,
     TranscriptionResult,
@@ -22,17 +22,15 @@ from .types import (
 
 __all__ = [
     # 引擎
-    'FunASREngine',
-    'create_asr_engine',
-
+    "FunASREngine",
+    "create_asr_engine",
     # 结果类型
-    'RecognitionResult',
-    'RecognitionStream',
-    'TranscriptionResult',
-    'DecodeResult',
-
+    "RecognitionResult",
+    "RecognitionStream",
+    "TranscriptionResult",
+    "DecodeResult",
     # 配置和统计
-    'Timings',
-    'ASREngineConfig',
-    'Statistics',
+    "Timings",
+    "ASREngineConfig",
+    "Statistics",
 ]

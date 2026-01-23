@@ -21,7 +21,7 @@ from .nano_ctc import load_ctc_tokens, decode_ctc, align_timestamps
 from .nano_audio import load_audio
 from .nano_onnx import load_onnx_models, encode_audio
 from .hotword.hot_phoneme import PhonemeCorrector
-from .types import (
+from .custom_types import (
     RecognitionResult,
     RecognitionStream,
     TranscriptionResult,
@@ -129,8 +129,7 @@ class FunASREngine:
             # 1. 加载 ONNX 模型
             self._log("[1/6] 加载 ONNX 模型...", verbose)
             self.encoder_sess, self.ctc_sess, _ = load_onnx_models(
-                self.encoder_onnx_path,
-                self.ctc_onnx_path
+                self.encoder_onnx_path, self.ctc_onnx_path
             )
 
             # 2. 加载 GGUF LLM
@@ -139,8 +138,7 @@ class FunASREngine:
 
             model_params = nano_llama.llama_model_default_params()
             self.model = nano_llama.llama_model_load_from_file(
-                self.decoder_gguf_path.encode('utf-8'),
-                model_params
+                self.decoder_gguf_path.encode("utf-8"), model_params
             )
 
             if not self.model:
@@ -151,7 +149,9 @@ class FunASREngine:
 
             # 3. 加载 Embedding 权重
             self._log("[3/6] 加载 Embedding 权重...", verbose)
-            self.embedding_table = nano_llama.get_token_embeddings_gguf(self.decoder_gguf_path)
+            self.embedding_table = nano_llama.get_token_embeddings_gguf(
+                self.decoder_gguf_path
+            )
             if self.embedding_table is None:
                 raise RuntimeError("Failed to load embedding weights")
 
@@ -231,7 +231,7 @@ class FunASREngine:
         self,
         hotwords: List[str] = None,
         language: Optional[str] = None,
-        context: Optional[str] = None
+        context: Optional[str] = None,
     ) -> Tuple[np.ndarray, np.ndarray, int, int]:
         """准备 Prompt Embeddings
 
@@ -269,10 +269,7 @@ class FunASREngine:
         return prefix_embd, suffix_embd, len(prefix_tokens), len(suffix_tokens)
 
     def _run_llm_decode(
-        self,
-        full_embd: np.ndarray,
-        n_input_tokens: int,
-        stream_output: bool = False
+        self, full_embd: np.ndarray, n_input_tokens: int, stream_output: bool = False
     ) -> Tuple[str, int, float, float]:
         """运行 LLM 解码
 
@@ -293,7 +290,7 @@ class FunASREngine:
         batch_embd.n_tokens = n_input_tokens
         batch_embd.token = ctypes.cast(None, ctypes.POINTER(nano_llama.llama_token))
 
-        if not full_embd.flags['C_CONTIGUOUS']:
+        if not full_embd.flags["C_CONTIGUOUS"]:
             full_embd = np.ascontiguousarray(full_embd)
         ctypes.memmove(batch_embd.embd, full_embd.ctypes.data, full_embd.nbytes)
 
@@ -365,7 +362,7 @@ class FunASREngine:
         audio_path: str,
         language: Optional[str] = None,
         context: Optional[str] = None,
-        verbose: bool = True
+        verbose: bool = True,
     ) -> TranscriptionResult:
         """
         转录音频文件
@@ -388,9 +385,9 @@ class FunASREngine:
         try:
             t_start = time.perf_counter()
 
-            self._log(f"\n{'='*70}", verbose)
+            self._log(f"\n{'=' * 70}", verbose)
             self._log(f"处理音频: {os.path.basename(audio_path)}", verbose)
-            self._log(f"{'='*70}", verbose)
+            self._log(f"{'=' * 70}", verbose)
 
             # 1. 加载音频
             self._log("\n[1] 加载音频...", verbose)
@@ -404,7 +401,13 @@ class FunASREngine:
             stream.accept_waveform(self.sample_rate, audio)
 
             # 调用 decode_stream 并获取内部结果
-            decode_result = self.decode_stream(stream, language=language, context=context, verbose=verbose, _return_internal=True)
+            decode_result = self.decode_stream(
+                stream,
+                language=language,
+                context=context,
+                verbose=verbose,
+                _return_internal=True,
+            )
 
             # 复制计时信息
             timings.encode = decode_result.timings.encode
@@ -420,7 +423,7 @@ class FunASREngine:
             result.hotwords = decode_result.hotwords
 
             if decode_result.ctc_results:
-                ctc_text = ''.join([r.text for r in decode_result.ctc_results])
+                ctc_text = "".join([r.text for r in decode_result.ctc_results])
                 result.ctc_text = ctc_text
 
             # 统计信息
@@ -430,25 +433,40 @@ class FunASREngine:
                 # 使用 Statistics dataclass
                 stats = Statistics(
                     audio_duration=audio_duration,
-                    n_input_tokens=decode_result.audio_embd.shape[0] + decode_result.n_prefix + decode_result.n_suffix,
+                    n_input_tokens=decode_result.audio_embd.shape[0]
+                    + decode_result.n_prefix
+                    + decode_result.n_suffix,
                     n_prefix_tokens=decode_result.n_prefix,
                     n_audio_tokens=decode_result.audio_embd.shape[0],
                     n_suffix_tokens=decode_result.n_suffix,
                     n_generated_tokens=decode_result.n_gen,
                 )
-                stats.tps_in = (decode_result.audio_embd.shape[0] + decode_result.n_prefix + decode_result.n_suffix) / timings.inject if timings.inject > 0 else 0
-                stats.tps_out = decode_result.n_gen / timings.llm_generate if timings.llm_generate > 0 else 0
+                stats.tps_in = (
+                    (
+                        decode_result.audio_embd.shape[0]
+                        + decode_result.n_prefix
+                        + decode_result.n_suffix
+                    )
+                    / timings.inject
+                    if timings.inject > 0
+                    else 0
+                )
+                stats.tps_out = (
+                    decode_result.n_gen / timings.llm_generate
+                    if timings.llm_generate > 0
+                    else 0
+                )
 
                 print(f"\n[统计]\n{stats}")
 
                 # 格式化耗时显示（与 asr_e2e.py 一致）
                 print(f"\n[转录耗时]")
-                print(f"  - 音频编码： {timings.encode*1000:5.0f}ms")
-                print(f"  - CTC解码：  {timings.ctc*1000:5.0f}ms")
-                print(f"  - LLM读取：  {timings.inject*1000:5.0f}ms")
-                print(f"  - LLM生成：  {timings.llm_generate*1000:5.0f}ms")
+                print(f"  - 音频编码： {timings.encode * 1000:5.0f}ms")
+                print(f"  - CTC解码：  {timings.ctc * 1000:5.0f}ms")
+                print(f"  - LLM读取：  {timings.inject * 1000:5.0f}ms")
+                print(f"  - LLM生成：  {timings.llm_generate * 1000:5.0f}ms")
                 if decode_result.aligned:
-                    print(f"  - 时间戳对齐:{timings.align*1000:5.0f}ms")
+                    print(f"  - 时间戳对齐:{timings.align * 1000:5.0f}ms")
                 print(f"  - 总耗时：   {timings.total:5.2f}s")
                 print()
 
@@ -478,7 +496,7 @@ class FunASREngine:
         language: Optional[str] = None,
         context: Optional[str] = None,
         verbose: bool = False,
-        _return_internal: bool = False
+        _return_internal: bool = False,
     ):
         """
         解码单个音频流（兼容 sherpa-onnx API）
@@ -516,7 +534,7 @@ class FunASREngine:
                 t_encode = time.perf_counter() - t_encode_start
                 timings.encode = t_encode
                 if verbose:
-                    print(f"    耗时: {t_encode*1000:.2f}ms")
+                    print(f"    耗时: {t_encode * 1000:.2f}ms")
 
             # 2. CTC 解码
             t_ctc_start = time.perf_counter() if _return_internal else None
@@ -529,12 +547,12 @@ class FunASREngine:
                 t_ctc = time.perf_counter() - t_ctc_start
                 timings.ctc = t_ctc
                 if verbose and ctc_results:
-                    ctc_text = ''.join([r.text for r in ctc_results])
+                    ctc_text = "".join([r.text for r in ctc_results])
                     print(f"    CTC: {ctc_text}")
                     if hotwords:
                         print(f"    热词: {hotwords}")
                 if verbose:
-                    print(f"    耗时: {t_ctc*1000:.2f}ms")
+                    print(f"    耗时: {t_ctc * 1000:.2f}ms")
 
             # 3. 准备 Prompt
             t_prepare_start = time.perf_counter() if _return_internal else None
@@ -542,7 +560,9 @@ class FunASREngine:
             if verbose and _return_internal:
                 print("\n[4] 准备 Prompt...")
 
-            prefix_embd, suffix_embd, n_prefix, n_suffix = self._prepare_prompt(hotwords, language, context)
+            prefix_embd, suffix_embd, n_prefix, n_suffix = self._prepare_prompt(
+                hotwords, language, context
+            )
             if _return_internal and timings:
                 timings.prepare = time.perf_counter() - t_prepare_start
                 if verbose:
@@ -554,11 +574,9 @@ class FunASREngine:
                 print("\n[5] LLM 解码...")
                 print("=" * 70)
 
-            full_embd = np.concatenate([
-                prefix_embd,
-                audio_embd.astype(np.float32),
-                suffix_embd
-            ], axis=0)
+            full_embd = np.concatenate(
+                [prefix_embd, audio_embd.astype(np.float32), suffix_embd], axis=0
+            )
 
             n_input_tokens = full_embd.shape[0]
             text, n_gen, t_inject, t_gen = self._run_llm_decode(
@@ -585,11 +603,13 @@ class FunASREngine:
             if ctc_results:
                 aligned = align_timestamps(ctc_results, text)
                 if aligned:
-                    tokens = [seg['char'] for seg in aligned]
-                    timestamps = [seg['start'] for seg in aligned]
+                    tokens = [seg["char"] for seg in aligned]
+                    timestamps = [seg["start"] for seg in aligned]
 
                     if verbose and _return_internal:
-                        print(f"    对齐耗时: {(time.perf_counter() - t_align_start)*1000:.2f}ms")
+                        print(
+                            f"    对齐耗时: {(time.perf_counter() - t_align_start) * 1000:.2f}ms"
+                        )
                         print(f"    对齐结果 (前10个字符):")
                         for r in aligned[:10]:
                             print(f"      {r['start']:.2f}s: {r['char']}")
@@ -600,11 +620,7 @@ class FunASREngine:
                 timings.align = time.perf_counter() - t_align_start
 
             # 6. 设置结果到 stream
-            stream.set_result(
-                text=text,
-                timestamps=timestamps,
-                tokens=tokens
-            )
+            stream.set_result(text=text, timestamps=timestamps, tokens=tokens)
 
             # 返回内部结果（供 transcribe 使用）
             if _return_internal:
@@ -617,7 +633,7 @@ class FunASREngine:
                     n_suffix=n_suffix,
                     n_gen=n_gen,
                     timings=timings,
-                    hotwords=hotwords
+                    hotwords=hotwords,
                 )
 
         except Exception as e:
