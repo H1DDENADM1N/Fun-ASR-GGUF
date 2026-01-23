@@ -12,6 +12,7 @@ dependencies = [
     "pydub>=0.25.1",
     "pypinyin>=0.55.0",
     "rich>=14.2.0",
+    "srt>=3.5.3",
     "watchdog>=6.0.0",
 ]
 

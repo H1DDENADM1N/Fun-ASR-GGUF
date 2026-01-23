@@ -37,7 +37,7 @@ uv sync --group gpu  # onnxruntime-gpu
 # uv sync --group cpu  # onnxruntime
 
 
-# pip install onnx onnxruntime numpy pydub gguf watchdog rich pypinyin
+# pip install onnx onnxruntime numpy pydub gguf watchdog rich pypinyin srt
 ```
 
 >  `pydub` 用于音频格式转换，需要系统安装 [ffmpeg](https://ffmpeg.org/download.html)
