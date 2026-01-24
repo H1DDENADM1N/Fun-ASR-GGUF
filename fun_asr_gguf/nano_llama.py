@@ -127,7 +127,7 @@ llama_memory_clear = None
 
 
 def init_llama_lib():
-    """初始化 llama.cpp 库，自动从模块所在目录加载 DLL"""
+    """初始化 llama.cpp 库，自动从模块所在目录加载动态库（支持 Windows/Linux/macOS）"""
     global llama, ggml, ggml_base
     global llama_log_set, llama_backend_init, llama_backend_free
     global \
@@ -146,9 +146,19 @@ def init_llama_lib():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     lib_dir = os.path.join(base_dir, "bin")
 
-    GGML_DLL_PATH = os.path.join(lib_dir, "ggml.dll")
-    LLAMA_DLL_PATH = os.path.join(lib_dir, "llama.dll")
-    GGML_BASE_DLL_PATH = os.path.join(lib_dir, "ggml-base.dll")
+    # 根据操作系统选择正确的动态库扩展名和命名格式
+    if sys.platform == "win32":
+        GGML_DLL_PATH = os.path.join(lib_dir, "ggml.dll")
+        LLAMA_DLL_PATH = os.path.join(lib_dir, "llama.dll")
+        GGML_BASE_DLL_PATH = os.path.join(lib_dir, "ggml-base.dll")
+    elif sys.platform == "darwin":
+        GGML_DLL_PATH = os.path.join(lib_dir, "libggml.dylib")
+        LLAMA_DLL_PATH = os.path.join(lib_dir, "libllama.dylib")
+        GGML_BASE_DLL_PATH = os.path.join(lib_dir, "libggml-base.dylib")
+    else:  # Linux 和其他类 Unix 系统
+        GGML_DLL_PATH = os.path.join(lib_dir, "libggml.so")
+        LLAMA_DLL_PATH = os.path.join(lib_dir, "libllama.so")
+        GGML_BASE_DLL_PATH = os.path.join(lib_dir, "libggml-base.so")
 
     original_cwd = os.getcwd()
     os.chdir(lib_dir)

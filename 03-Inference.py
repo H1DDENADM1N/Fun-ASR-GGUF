@@ -114,6 +114,7 @@ def main():
         duration=10.0,
     )
 
+    input('回车开始转录......')
     result = engine.transcribe(
         audio_file,
         language=language,

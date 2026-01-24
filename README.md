@@ -1,19 +1,20 @@
 # Fun-ASR-GGUF
 
-将 [Fun-ASR-Nano](https://www.modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512) 模型转换为可以在本地高效运行的格式，实现**准确、快速的离线语音识别**。主要依赖了 [llama.cpp](https://github.com/ggml-org/llama.cpp) 对 LLM Decoder 的加速推理。
+将 [Fun-ASR-Nano](https://www.modelscope.cn/models/FunAudioLLM/Fun-ASR-Nano-2512) 模型转换为可以在本地高效运行的格式，实现**准确、快速的离线语音识别**，可直接转录长音频生成 SRT。主要依赖了 [llama.cpp](https://github.com/ggml-org/llama.cpp) 对 LLM Decoder 的加速推理。
 
 ### 核心特性
 
 - ✅ **纯本地运行** - 无需网络，数据不外传
-- ✅ **速度快** - 混合推理架构，支持 GPU 加速
+- ✅ **速度快** - 混合推理架构，支持 GPU 加速 (CUDA, Vulkan, Metal)
 - ✅ **准确率高** - Encoder 保持 FP32 精度
 - ✅ **内存占用小** - CTC Decoder 和 LLM Decoder 使用 INT8 量化
 - ✅ **上下文增强** - 可提供上下文信息，进一步提升识别准确率
-- ✅ **支持热词** - 通过 CTC 预识别提取热词，提高专业领域识别准确率
+- ✅ **支持热词** - 通过 CTC 预识别，基于音素提取热词，提高专业领域识别准确率，实时监控热词文件
 - ✅ **时间戳精确** - 字符级时间戳对齐
-- ✅ **较长音频支持** - 单次可识别长达 60 秒的音频
+- ✅ **较长音频支持** - 单次可识别长达 60 秒的音频，超长音频自动分段，智能对齐
+- ✅ **SRT 导出** - 支持自动生成美化后的 SRT 字幕
 
----
+[转录速度视频演示（RTX5050）](https://github.com/user-attachments/assets/3bbd3f77-6aa9-4387-a53d-7859d1b7f5a5)
 
 ## 快速开始
 
@@ -37,19 +38,22 @@ uv sync --group gpu  # onnxruntime-gpu
 # uv sync --group cpu  # onnxruntime
 
 
+# pip install -r requirements.txt
 # pip install onnx onnxruntime numpy pydub gguf watchdog rich pypinyin srt
 ```
 
 >  `pydub` 用于音频格式转换，需要系统安装 [ffmpeg](https://ffmpeg.org/download.html)
 
 
-从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载预编译二进制文件：
+从 [llama.cpp Releases](https://github.com/ggml-org/llama.cpp/releases) 下载预编译二进制文件，将动态库放入 `fun_asr_gguf/bin/` 文件夹：
 
-- Windows: 下载 `llama-bXXXX-bin-win-vulkan-x64.zip`
+| 平台        | 下载文件                             |
+| ----------- | ------------------------------------ |
+| **Windows** | `llama-bXXXX-bin-win-vulkan-x64.zip` |
+| **Linux**   | `llama-bXXXX-bin-ubuntu-x64.zip`     |
+| **macOS**   | `llama-bXXXX-bin-macos-arm64.zip`    |
 
-解压后将以 `dll` 文件放入 `fun_asr_gguf/` 文件夹：
-
-> MacOS 和 Linux 也有对应的预编译文件，但我没有做测试
+> Linux 和 macOS 尚未经过完整测试，欢迎反馈
 
 ### 2. 下载模型（可选，如已有导出模型可跳过）
 
@@ -79,6 +83,7 @@ uv run 02-Export-Decoder-GGUF.py
 ```python
 from fun_asr_gguf import create_asr_engine
 
+# 创建并初始化引擎 (推荐使用单例或长期持有实例)
 engine = create_asr_engine(
     encoder_onnx_path="model/Fun-ASR-Nano-Encoder-Adaptor.fp32.onnx",
     ctc_onnx_path="model/Fun-ASR-Nano-CTC.int8.onnx",
@@ -96,7 +101,7 @@ print(result.text)
 
 就这么简单！
 
-> 单段音频长度在60秒内可准确识别，过长会有问题
+> 单段音频长度在60秒内可准确识别，过长会自动分段
 
 ---
 
@@ -171,21 +176,21 @@ engine = create_asr_engine(
 )
 engine.initialize()
 
-# 转录音频
-result = engine.transcribe("audio.mp3")
+
+result = engine.transcribe(
+    "input.mp3", 
+    language="中文", 
+    context="这是睡前消息的音频，主持人叫督工", 
+    verbose=True,       # 打印细节
+    segment_size=60.0,  # 分片60秒
+    overlap=4.0,        # 片间重叠4秒
+    start_second=0.0,   # 从第零秒开始
+    duration=300.0,     # 转录到第300秒结束
+    srt=True            # 输出 SRT 字幕文件
+)
 print(result.text)           # 识别文本
 print(result.segments)       # 带时间戳的分段
 print(result.timings)        # 各阶段耗时
-```
-
-### 指定语言和上下文
-
-```python
-result = engine.transcribe(
-    "audio.mp3",
-    language="中文",        # None=自动检测, "中文", "英文", "日文" 等
-    context="这是技术会议讨论深度学习"  # 上下文信息可以提高准确率
-)
 ```
 
 
@@ -202,7 +207,7 @@ result = engine.transcribe(
 
 **特性：**
 1. **实时更新**：识别程序运行期间，你可以随时修改 `hot.txt` 并保存，程序会通过 `watchdog` 自动更新内存中的热词库，无需重启。
-2. **模糊召回**：热词可以有几千条、上万条，程序会根据 CTC 的粗识别结果进行音素级别的模糊匹配，找出相似度在 `similar_threshold` 以上的热词，并取前 `max_hotwords` 条（默认10条）作为上下文提供给 LLM 纠错。
+2. **模糊召回**：热词可以有几千条、上万条，程序会根据 CTC 的粗识别结果进行音素级别的模糊匹配，找出相似度在 `similar_threshold` 以上的热词，并取前 `max_hotwords` 条（默认10条）作为上下文提供给 LLM Decoder 从而得到更准确的输出。
 
 ---
 
@@ -215,54 +220,6 @@ result = engine.transcribe(
 在文字密度更低的音频上，识别速度还能更快。
 
 ```
-======================================================================
-处理音频: input.mp3
-======================================================================
-
-[1] 加载音频...
-    音频长度: 60.00s
-
-[2] 音频编码...
-    耗时: 934.21ms
-
-[3] CTC 解码...
-    CTC: 大家好二零二六年一月十一日星期日欢迎收看一千零四起事间消息请静静介绍话题去年十月十九
-日九百六十七期节目说到韦内瑞拉问题我们回顾一下你当时的评论无论是从集节的兵力来看还这种动机来 
-看特朗普政府并不打算对韦伦瑞拉政权发动全面的进攻最多是发动象征性的轰炸进行政投击在诺贝尔和平 
-鸟发给了韦内瑞拉反对派之后美国军队进攻的概率进一步降低现在美国突袭韦内瑞拉抓走了总统马杜罗杜 
-工你怎么看待两个月之前的判断当初的判断不变美国对于韦内瑞拉的突袭性质依然是政治投击不能算是地 
-面战争入侵的美国军队总数是以两百站在韦伦瑞拉领土上的时间不超过一个小时算是地面战争或者全面进 
-攻实在有点勉强当然美国动用总力量并不小一五十架先进飞机加上经年累月不止的情报网络这放在东亚或 
-者欧洲也不是一支很小的力量用到美国的西半球主场压倒韦伦瑞拉的军队那是必然的
-    热词: ['睡前消息', '督工']
-    耗时: 133.76ms
-
-[4] 准备 Prompt...
---------------- Prefix Prompt ---------------
-<|im_start|>system
-You are a helpful assistant.<|im_end|>
-<|im_start|>user
-请结合上下文信息，更加准确地完成语音转写任务。
-
-
-**上下文信息：**这是1004期睡前消息节目，主持人叫督工，助理叫静静
-
-
-热词列表：[睡前消息, 督工]
-语音转写：
-----------------------------------------
-    Prefix: 72 tokens
-    Suffix: 5 tokens
-
-[5] LLM 解码...
-======================================================================
-大家好，2026年1月11日星期日，欢迎收看1004期《睡前消息》。请静静介绍话题。去年10月19日967期节目说到委内瑞拉问题，我们回顾一下你当时的评论。无论是从集结的兵力来看，还是从动机来看，特朗普政府并不打算对委内瑞拉政权发动全面的进攻，最多是发动象征性的轰炸进行政治投机。在诺贝尔和平奖发给了委内瑞拉反对派之后，美国军队进攻的概率进一步降低。现在美国突袭委内瑞拉，抓走了总统马杜罗。杜工，你怎么看待两个月之前的判断？当初的判断不变，美国对于委内瑞拉的突袭性质依然是政治投机，不能算是地面战争。入侵的美国军队总数是以200占在委内瑞拉领土上的时间不超过一个小时，算是地面战争或者全面进攻，实在有强。当然，美国动用总力量并不小，150架先进飞机，加上经年累月部署的情报网络，这放在东亚或者欧洲也不是一只很小的力量，用到美国的西半球主场压倒委内瑞拉的军队那是必然的。
-======================================================================
-
-[6] 时间戳对齐
-    对齐耗时: 118.78ms
-    结果预览: 大(1.23s) 家(1.35s) 好(1.47s) ，(1.62s) 2(1.77s) 0(1.89s) 2(2.01s) 6(2.13s) 年(2.25s) 1(2.43s) ...
-
 [统计]
   音频长度:  60.00s
   Decoder输入:   6994 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
@@ -294,8 +251,25 @@ You are a helpful assistant.<|im_end|>
   - 总耗时：    7.04s
 ```
 
+长音频推理输出示例：
 
+```
+[1] 加载音频...
+    音频长度: 300.00s
+    检测到长音频，开启分段识别模式...
+
+[转录耗时]
+  - 音频编码：  5326ms
+  - CTC解码：    681ms
+  - LLM读取：    192ms
+  - LLM生成：   6022ms
+  - 总耗时：   13.57s
+
+✓ 字幕已导出至: input5.srt
+
+```
 ---
+
 ## 性能参考 2
 以下是在 Redmi Book Pro 14 2022 (AMD Ryzen 7 6800H with Radeon Graphics) 笔记本上的效果，60秒的睡前消息音频，GPU 转录用时约 5.9 秒，RTF 0.098；CPU 转录用时约 9.12 秒，RTF 0.152。
 需要注意的是，**LLM Decoder 所需时间取决于吐出文字的数量，不适合用 RTF 描述**，睡前消息音频的文字密度非常高，短短60秒就有252个字，但这段音频的速度可以作为下限参考，即 RTF 最慢也不会慢过 0.15。
@@ -337,43 +311,47 @@ You are a helpful assistant.<|im_end|>
 
 ## 常见问题
 
-### Q: Encoder 为什么不用 INT8？
+**Q: Encoder 为什么不用 INT8？**  
+- 测试发现 Encoder 用 INT8 会有可观察到的准确率下降，建议保持 FP32，延迟上也就差个100毫秒左右。
 
-A: 测试发现 Encoder 用 INT8 会有可观察到的准确率下降，建议保持 FP32，延迟上也就差个100毫秒左右。
-
-### Q: 如何选择量化级别？
-
-A:
+**Q: 如何选择量化级别？**  
 - **Encoder**：尽量 FP32，保证精度
 - **CTC Decoder 和 LLM Decoder**：推荐 Q8_0（INT8），速度快且准确率影响小
 
-### Q: 支持哪些语言？
+**Q: 支持哪些语言？**  
+- Fun-ASR-Nano-2512 支持中文、英文、日文。
+- Fun-ASR-MLT-Nano-2512 还支持更多语言（粤语、韩文、越南语等）。
 
-A: Fun-ASR-Nano-2512 支持中文、英文、日文。Fun-ASR-MLT-Nano-2512 还支持更多语言（粤语、韩文、越南语等）。
+**Q: 如何提高识别准确率？**  
+- 配置 `hot.txt` 添加领域热词
+- 使用 `context` 参数提供上下文信息
 
-### Q: 如何提高识别准确率？
+**Q: 输出全是「!!!!!!!!!!」怎么办？**  
+- Intel 集成显卡的 fp16 矩阵求和计算没有使用 fp32 做临时变量，溢出为 NaN，产生了如此问题，解决办法是通过设置环境变量禁用 fp32 ，或禁用 vulkan。取决于 CPU 更快，还是集显的 fp32 更快。
 
-A:
-1. 使用 `context` 参数提供上下文信息
-2. 配置 `hot.txt` 添加领域热词
+```python
+os.environ["VK_ICD_FILENAMES"] = "none"       # 禁止 Vulkan
+os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"   # 禁止 Vulkan 用独显（强制用集显）
+os.environ["GGML_VK_DISABLE_F16"] = "1"       # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
+```
 
-### Q: 如何提高识别准确率？
-
-A:
-1. 使用 `context` 参数提供上下文信息
-2. 配置 `hot.txt` 添加领域热词
 
 
 ---
 
 ## 文件说明
 
-### 核心文件
+### 项目结构
 
 - `01-Export-Encoder-Adaptor-CTC.py` - 导出 Encoder 和 CTC Decoder
 - `02-Export-Decoder-GGUF.py` - 导出 LLM Decoder
 - `03-Inference.py` - 完整的使用示例
-- `fun_asr_gguf/` - 核心推理引擎
+- `fun_asr_gguf/`
+  - `core/` - 核心逻辑（资源管理、解码、编排）
+  - `bin/` - 存放 DLL 和二进制可执行文件
+  - `asr_engine.py` - Facade 入口类
+  - `srt_utils.py` - 字幕生成工具
+  - `text_merge.py` - 滑动窗口文本合并算法
 
 ### 导出的模型
 
