@@ -5,12 +5,17 @@ ASR 推理引擎入口点 (Facade)
 保持了与旧版 API 的完全兼容。
 """
 
-import os
 from typing import Optional
 
-from .nano_dataclass import ASREngineConfig, TranscriptionResult, RecognitionStream, DecodeResult
 from .core.model_manager import ModelManager
 from .core.orchestrator import TranscriptionOrchestrator
+from .nano_dataclass import (
+    ASREngineConfig,
+    DecodeResult,
+    RecognitionStream,
+    TranscriptionResult,
+)
+
 
 class FunASREngine:
     """FunASR 推理引擎 (Facade 模式)"""
@@ -39,7 +44,7 @@ class FunASREngine:
             n_predict=n_predict,
             n_threads=n_threads,
             similar_threshold=similar_threshold,
-            max_hotwords=max_hotwords
+            max_hotwords=max_hotwords,
         )
 
         # 初始化组件
@@ -61,7 +66,7 @@ class FunASREngine:
         overlap: float = 2.0,
         start_second: Optional[float] = None,
         duration: Optional[float] = None,
-        srt: bool = False
+        srt: bool = False,
     ) -> TranscriptionResult:
         """转录音频文件 (委托给 Orchestrator)"""
         return self.orchestrator.transcribe(
@@ -73,7 +78,7 @@ class FunASREngine:
             overlap=overlap,
             start_second=start_second,
             duration=duration,
-            srt=srt
+            srt=srt,
         )
 
     def create_stream(self, hotwords: Optional[str] = None) -> RecognitionStream:
@@ -87,7 +92,7 @@ class FunASREngine:
         language: Optional[str] = None,
         context: Optional[str] = None,
         verbose: bool = True,
-        reporter = None
+        reporter=None,
     ) -> DecodeResult:
         """解码识别流 (委托给 Orchestrator 内置的 Decoder)"""
         return self.orchestrator.decoder.decode_stream(
@@ -121,6 +126,15 @@ def create_asr_engine(
         similar_threshold=similar_threshold,
         max_hotwords=max_hotwords,
     )
-    if not engine.initialize(verbose=verbose):
-        raise RuntimeError("Failed to initialize ASR engine")
+    try:
+        success = engine.initialize(verbose=verbose)
+        if not success:
+            print("Engine initialization returned False")
+            raise RuntimeError("Failed to initialize ASR engine")
+    except Exception as e:
+        print(f"Initialization error details: {type(e).__name__}: {e}")
+        import traceback
+
+        traceback.print_exc()  # 这会打印完整的堆栈跟踪
+        raise
     return engine

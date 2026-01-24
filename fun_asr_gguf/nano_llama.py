@@ -1,9 +1,9 @@
 import ctypes
 import os
-
-import numpy as np
+import sys
 
 import gguf
+import numpy as np
 
 # =========================================================================
 # Configuration
