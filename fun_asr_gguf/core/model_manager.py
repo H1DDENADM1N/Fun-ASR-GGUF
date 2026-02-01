@@ -49,12 +49,7 @@ class ModelManager:
 
             # 2. GGUF
             vprint("[2/6] 加载 GGUF LLM Decoder...", verbose)
-            llama.init_llama_lib()
-            model_params = llama.llama_model_default_params()
-            self.model = llama.llama_model_load_from_file(
-                self.config.decoder_gguf_path.encode('utf-8'),
-                model_params
-            )
+            self.model = llama.load_model(self.config.decoder_gguf_path)
             if not self.model:
                 raise RuntimeError("Failed to load GGUF model")
             
@@ -67,7 +62,13 @@ class ModelManager:
             
             # 4. Context
             vprint("[4/6] 创建 LLM 上下文...", verbose)
-            self.ctx = self._create_context()
+            self.ctx = llama.create_context(
+                self.model,
+                n_ctx=2048,
+                n_batch=2048,
+                n_ubatch=self.config.n_ubatch,
+                n_threads=self.config.n_threads,
+            )
             
             # 5. CTC & Prompt
             vprint("[5/6] 加载 CTC 词表与 Prompt 构建器...", verbose)
@@ -99,25 +100,14 @@ class ModelManager:
             vprint(f"✗ 初始化失败: {e}", verbose)
             return False
 
-    def _create_context(self):
-        ctx_params = nano_llama.llama_context_default_params()
-        ctx_params.n_ctx = 2048
-        ctx_params.n_batch = 2048
-        ctx_params.n_ubatch = self.config.n_ubatch
-        ctx_params.embeddings = False
-        ctx_params.no_perf = True
-        ctx_params.n_threads = self.config.n_threads or (os.cpu_count() // 2)
-        ctx_params.n_threads_batch = self.config.n_threads_batch or os.cpu_count()
-        return nano_llama.llama_init_from_model(self.model, ctx_params)
-
     def cleanup(self):
         if self.hotword_manager:
             self.hotword_manager.stop_file_watcher()
         if self.ctx:
-            nano_llama.llama_free(self.ctx)
+            llama.llama_free(self.ctx)
             self.ctx = None
         if self.model:
-            nano_llama.llama_model_free(self.model)
-            nano_llama.llama_backend_free()
+            llama.llama_model_free(self.model)
+            llama.llama_backend_free()
             self._initialized = False
             print("[ASR] 资源已释放")
