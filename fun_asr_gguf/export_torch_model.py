@@ -31,10 +31,8 @@ class SinusoidalPositionEncoder(nn.Module):
             torch.arange(depth / 2, device=device).type(dtype)
             * (-log_timescale_increment)
         )
-        inv_timescales = torch.reshape(inv_timescales, [batch_size, -1])
-        scaled_time = torch.reshape(positions, [1, -1, 1]) * torch.reshape(
-            inv_timescales, [1, 1, -1]
-        )
+        inv_timescales = inv_timescales.unsqueeze(0)
+        scaled_time = positions.unsqueeze(-1) * inv_timescales.unsqueeze(1)
         encoding = torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=2)
         return encoding.type(dtype)
 
@@ -116,7 +114,7 @@ class MultiHeadedAttentionSANM(nn.Module):
     def forward_fsmn(self, inputs, mask, mask_shfit_chunk=None):
         b, t, d = inputs.size()
         if mask is not None:
-            mask = torch.reshape(mask, (b, -1, 1))
+            mask = mask.unsqueeze(-1)
             if mask_shfit_chunk is not None:
                 mask = mask * mask_shfit_chunk
             inputs = inputs * mask
@@ -148,15 +146,9 @@ class MultiHeadedAttentionSANM(nn.Module):
         b, t, d = x.size()
         q_k_v = self.linear_q_k_v(x)
         q, k, v = torch.split(q_k_v, int(self.h * self.d_k), dim=-1)
-        q_h = torch.reshape(q, (b, t, self.h, self.d_k)).transpose(
-            1, 2
-        )  # (batch, head, time1, d_k)
-        k_h = torch.reshape(k, (b, t, self.h, self.d_k)).transpose(
-            1, 2
-        )  # (batch, head, time2, d_k)
-        v_h = torch.reshape(v, (b, t, self.h, self.d_k)).transpose(
-            1, 2
-        )  # (batch, head, time2, d_k)
+        q_h = q.unflatten(-1, (self.h, self.d_k)).transpose(1, 2)
+        k_h = k.unflatten(-1, (self.h, self.d_k)).transpose(1, 2)
+        v_h = v.unflatten(-1, (self.h, self.d_k)).transpose(1, 2)
 
         return q_h, k_h, v_h, v
 
@@ -193,7 +185,7 @@ class MultiHeadedAttentionSANM(nn.Module):
         p_attn = self.dropout(attn)
         x = torch.matmul(p_attn, value)  # (batch, head, time1, d_k)
         x = (
-            x.transpose(1, 2).contiguous().view(n_batch, -1, self.h * self.d_k)
+            x.permute(0, 2, 1, 3).flatten(2)
         )  # (batch, time1, d_model)
 
         return self.linear_out(x)  # (batch, time1, d_model)

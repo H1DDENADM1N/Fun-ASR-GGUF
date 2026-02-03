@@ -25,7 +25,6 @@ import torchaudio
 import numpy as np
 import onnxruntime
 import onnx
-from onnxruntime.quantization import quantize_dynamic, QuantType
 import base64
 from pathlib import Path
 import torch.nn as nn
@@ -46,9 +45,7 @@ weight_path = os.path.join(model_dir, "model.pt")
 
 # Output filenames
 onnx_encoder_fp32 = f'{OUTPUT_DIR}/Fun-ASR-Nano-Encoder-Adaptor.fp32.onnx'
-onnx_encoder_int8 = f'{OUTPUT_DIR}/Fun-ASR-Nano-Encoder-Adaptor.int8.onnx'
 onnx_ctc_fp32 = f'{OUTPUT_DIR}/Fun-ASR-Nano-CTC.fp32.onnx'
-onnx_ctc_int8 = f'{OUTPUT_DIR}/Fun-ASR-Nano-CTC.int8.onnx'
 tokens_path = f'{OUTPUT_DIR}/tokens.txt'
 
 # Parameters
@@ -84,9 +81,10 @@ class MultiHeadedAttention(nn.Module):
 
     def forward_qkv(self, query, key, value):
         n_batch = query.size(0)
-        q = self.linear_q(query).view(n_batch, -1, self.h, self.d_k)
-        k = self.linear_k(key).view(n_batch, -1, self.h, self.d_k)
-        v = self.linear_v(value).view(n_batch, -1, self.h, self.d_k)
+        # Fix for DML: Use unflatten instead of view for splitting heads
+        q = self.linear_q(query).unflatten(-1, (self.h, self.d_k))
+        k = self.linear_k(key).unflatten(-1, (self.h, self.d_k))
+        v = self.linear_v(value).unflatten(-1, (self.h, self.d_k))
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
@@ -104,7 +102,8 @@ class MultiHeadedAttention(nn.Module):
 
         p_attn = self.dropout(attn)
         x = torch.matmul(p_attn, value)
-        x = x.transpose(1, 2).contiguous().view(n_batch, -1, self.h * self.d_k)
+        # Fix for DML: Use flatten instead of view to merge heads
+        x = x.transpose(1, 2).flatten(2)
         return self.linear_out(x)
 
     def forward(self, query, key, value, mask):
@@ -191,8 +190,9 @@ class CorrectTransformerAdaptor(nn.Module):
         pad_num = chunk_num * self.k - seq_len
         x = F.pad(x, (0, 0, 0, pad_num, 0, 0), value=0.0)
         
-        x = x.contiguous()
-        x = x.view(batch_size, chunk_num, dim * self.k)
+        # Fix for DML: Avoid view on dynamic shapes, use unflatten -> flatten
+        # x: (batch, chunk_num*k, dim) -> (batch, chunk_num, k, dim) -> (batch, chunk_num, k*dim)
+        x = x.unflatten(1, (chunk_num, self.k)).flatten(2)
         
         x = self.linear1(x)
         x = self.relu(x)
@@ -301,7 +301,9 @@ class CTCHeadExportWrapper(torch.nn.Module):
     def forward(self, enc_output):
         h, _ = self.ctc_decoder(enc_output, None)
         logits = self.ctc_proj.ctc_lo(h)
-        return logits
+        # [OPTIMIZATION] Fuse ArgMax into ONNX to return 8KB indices instead of 121MB logits.
+        indices = torch.argmax(logits, dim=-1).to(torch.int32)
+        return indices
 
 
 
@@ -425,21 +427,13 @@ def main():
         
         torch.onnx.export(
             ctc_wrapper, (dummy_enc,), onnx_ctc_fp32,
-            input_names=['enc_output'], output_names=['logits'],
-            dynamic_axes={'enc_output': {1: 'enc_len'}, 'logits': {1: 'enc_len'}},
+            input_names=['enc_output'], output_names=['indices'],
+            dynamic_axes={'enc_output': {1: 'enc_len'}, 'indices': {1: 'enc_len'}},
             opset_version=OPSET,
             dynamo=True
         )
         print(f"Saved to: {onnx_ctc_fp32}")
         merge_onnx_file(onnx_ctc_fp32)
-
-        print("\n[3/4] Quantizing Encoder...")
-        quantize_dynamic(onnx_encoder_fp32, onnx_encoder_int8, op_types_to_quantize=["MatMul"], per_channel=True, reduce_range=False, weight_type=QuantType.QUInt8)
-        print(f"Saved to: {onnx_encoder_int8}")
-
-        print(f"\n[4/4] Quantizing CTC Head...")
-        quantize_dynamic(onnx_ctc_fp32, onnx_ctc_int8, op_types_to_quantize=["MatMul"], per_channel=True, reduce_range=False, weight_type=QuantType.QUInt8)
-        print(f"Saved to: {onnx_ctc_int8}")
         
     print("\n[Success] Export complete.")
 

@@ -16,13 +16,13 @@ def load_onnx_models(encoder_path, ctc_path):
     encoder_sess = onnxruntime.InferenceSession(
         encoder_path, 
         sess_options=session_opts, 
-        providers=['CPUExecutionProvider']
+        providers=['DmlExecutionProvider', 'CPUExecutionProvider']
     )
     
     ctc_sess = onnxruntime.InferenceSession(
         ctc_path, 
         sess_options=session_opts, 
-        providers=['CPUExecutionProvider']
+        providers=['DmlExecutionProvider', 'CPUExecutionProvider']
     )
     
     t_cost = time.perf_counter() - t_start
@@ -32,8 +32,24 @@ def load_onnx_models(encoder_path, ctc_path):
 def encode_audio(audio, encoder_sess):
     """使用 ONNX Encoder 获取 LLM 嵌入和 CTC 特征"""
     
-    # Reshape: (1, 1, audio_len) and cast to float32
-    audio_input = audio.astype(np.float32).reshape(1, 1, -1)
+    # Check expected input type
+    # 'tensor(float16)' -> float16
+    input_type = encoder_sess.get_inputs()[0].type
+    if 'float16' in input_type:
+        dtype = np.float16
+        print(f"   [Debug] Model expects FP16 input. (Type: {input_type})")
+    else:
+        dtype = np.float32
+        print(f"   [Debug] Model expects FP32 input. (Type: {input_type})")
+
+    # [FIX] 如果输入使用了 int16 范围 (如来自 nano_audio)，需要归一化到 [-1, 1]
+    # 判断依据：如果最大值 > 100，则认为是 int16 范围
+    if np.max(np.abs(audio)) > 100:
+        print("   [Auto-Fix] Converting int16 range to [-1, 1]...")
+        audio = audio / 32768.0
+
+    # Reshape: (1, 1, audio_len) and cast
+    audio_input = audio.astype(dtype).reshape(1, 1, -1)
     
     in_names = [x.name for x in encoder_sess.get_inputs()]
     out_names = [x.name for x in encoder_sess.get_outputs()]
@@ -50,6 +66,7 @@ def encode_audio(audio, encoder_sess):
     enc_output = outputs[0].numpy()
     
     # Output 1: adaptor_output [1, T_llm, 1024] (For LLM)
-    audio_embd = outputs[1].numpy().squeeze(0) 
+    # MUST cast to float32 because LLM bindings (ctypes/llama.cpp) usually expect float* (32-bit)
+    audio_embd = outputs[1].numpy().squeeze(0).astype(np.float32)
     
     return audio_embd, enc_output

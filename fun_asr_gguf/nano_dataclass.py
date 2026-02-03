@@ -90,6 +90,14 @@ class Timings:
     llm_generate: float = 0.0
     align: float = 0.0
     total: float = 0.0
+    
+    # Detailed stats
+    ctc_infer: float = 0.0
+    ctc_decode: float = 0.0
+    ctc_cast: float = 0.0
+    ctc_argmax: float = 0.0
+    ctc_loop: float = 0.0
+    hotword_verify: float = 0.0
 
 
 @dataclass

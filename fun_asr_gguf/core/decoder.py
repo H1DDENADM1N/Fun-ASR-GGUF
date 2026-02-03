@@ -16,22 +16,35 @@ class CTCDecoder:
     def __init__(self, models: ModelManager):
         self.models = models
 
-    def decode(self, enc_output: np.ndarray, enable_ctc: bool, max_hotwords: int) -> Tuple[List, List[str]]:
+    def decode(self, enc_output: np.ndarray, enable_ctc: bool, max_hotwords: int) -> Tuple[List, List[str], Dict[str, float]]:
+        t_stats = {"infer": 0.0, "decode": 0.0, "hotword": 0.0}
+        
         if not enable_ctc or self.models.ctc_sess is None:
-            return [], []
+            return [], [], t_stats
 
+        # 1. Inference
+        t0 = time.perf_counter()
         ctc_logits = self.models.ctc_sess.run(None, {"enc_output": enc_output})[0]
-        ctc_text, ctc_results = decode_ctc(ctc_logits, self.models.ctc_id2token)
+        t_stats["infer"] = time.perf_counter() - t0
+
+        # 2. Decoding
+        t0 = time.perf_counter()
+        ctc_text, ctc_results, ctc_details = decode_ctc(ctc_logits, self.models.ctc_id2token)
+        t_stats["decode"] = time.perf_counter() - t0
+        t_stats.update(ctc_details) # cast, argmax, loop
 
         hotwords = []
+        # 3. Hotword Verification
+        t0 = time.perf_counter()
         if self.models.corrector and self.models.corrector.hotwords and ctc_text:
             res = self.models.corrector.correct(ctc_text, k=max_hotwords)
             candidates = set()
             for _, hw, _ in res.matchs: candidates.add(hw)
             for _, hw, _ in res.similars: candidates.add(hw)
             hotwords = list(candidates)
+        t_stats["hotword"] = time.perf_counter() - t0
             
-        return ctc_results, hotwords
+        return ctc_results, hotwords, t_stats
 
 class LLMDecoder:
     """负责 LLM 推理循环"""
@@ -125,19 +138,31 @@ class StreamDecoder:
         # 2. CTC
         if reporter: reporter.print("\n[3] CTC 解码...")
         t_s = time.perf_counter()
-        ctc_results, hotwords = self.ctc_decoder.decode(
+        ctc_results, hotwords, ctc_times = self.ctc_decoder.decode(
             enc_output, 
             self.models.config.enable_ctc, 
             self.models.config.max_hotwords
         )
         timings.ctc = time.perf_counter() - t_s
+        timings.ctc_infer = ctc_times["infer"]
+        timings.ctc_decode = ctc_times["decode"]
+        timings.hotword_verify = ctc_times["hotword"]
+        
+        # Store micro-stats dynamically to avoid modifying dataclass too much if not needed
+        # Or ideally extend Timings dataclass. For now let's just setattr
+        timings.ctc_cast = ctc_times.get("cast", 0.0)
+        timings.ctc_argmax = ctc_times.get("argmax", 0.0)
+        timings.ctc_loop = ctc_times.get("loop", 0.0)
         
         if verbose and ctc_results:
             ctc_text = "".join([r.text for r in ctc_results])
             if reporter:
                 reporter.print(f"    CTC: {ctc_text}")
                 if hotwords: reporter.print(f"    热词: {hotwords}")
-        if reporter: reporter.print(f"    耗时: {timings.ctc*1000:.2f}ms")
+        if reporter: 
+            reporter.print(f"    耗时: {timings.ctc*1000:.2f}ms (Infer: {timings.ctc_infer*1000:.0f}ms, "
+                           f"Dec: {timings.ctc_decode*1000:.0f}ms, "
+                           f"HW: {timings.hotword_verify*1000:.0f}ms)")
 
         # 3. Prompt
         if reporter: reporter.print("\n[4] 准备 Prompt...")
