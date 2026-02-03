@@ -55,7 +55,7 @@ modelscope download --model FunAudioLLM/Fun-ASR-Nano-2512 --local_dir ./Fun-ASR-
 python 01-Export-Encoder-Adaptor-CTC.py
 
 # 将 onnx 量化为 fp16 和 int8
-02-Quantize-ONNX.py
+python 02-Quantize-ONNX.py
 
 # 导出 LLM Decoder (INT8)
 python 03-Export-Decoder-GGUF.py
