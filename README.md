@@ -69,16 +69,17 @@ modelscope download --model FunAudioLLM/Fun-ASR-Nano-2512 --local_dir ./Fun-ASR-
 导出模型
 
 ```bash
-# 导出 Encoder (FP32) + CTC Decoder (INT8)
+# 导出 Encoder (FP32) + CTC Decoder (FP32)
 uv run 01-Export-Encoder-Adaptor-CTC.py
 # python 01-Export-Encoder-Adaptor-CTC.py
 
 # 将 onnx 量化为 fp16 和 int8
-python 02-Quantize-ONNX.py
+uv run 02-Quantize-ONNX.py
+# python 02-Quantize-ONNX.py
 
 # 导出 LLM Decoder (INT8)
-uv run 02-Export-Decoder-GGUF.py
-# python 02-Export-Decoder-GGUF.py
+uv run 03-Export-Decoder-GGUF.py
+# python 03-Export-Decoder-GGUF.py
 ```
 
 ### 3. 运行识别
@@ -294,15 +295,17 @@ print(result.timings)        # 各阶段耗时
 ```
 [统计]
   音频长度:  60.00s
-  Decoder输入:   5864 tokens/s (总: 204, prefix:73, audio:126, suffix:5)
-  Decoder输出:     70 tokens/s (总: 252)
+  Decoder输入:   7084 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
+  Decoder输出:     72 tokens/s (总: 252)
 
 [转录耗时]
-  - 音频编码：  1628ms
-  - CTC解码：    254ms
-  - LLM读取：     35ms
-  - LLM生成：   3594ms
-  - 总耗时：    5.90s
+  - 音频编码：  1843ms
+  - CTC解码：    358ms (Infer: 289ms, Dec: 1ms, HW: 68ms)
+  - Prompt:        1ms
+  - LLM读取：     29ms
+  - LLM生成：   3477ms
+  - 时间对齐：   165ms
+  - 推理总计：  5.87s
 
 ✓ 字幕已导出至: input.srt
 ```
@@ -310,15 +313,17 @@ print(result.timings)        # 各阶段耗时
 ```
 [统计]
   音频长度:  60.00s
-  Decoder输入:    367 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
-  Decoder输出:     41 tokens/s (总: 255)
+  Decoder输入:    383 tokens/s (总: 204, prefix:73, audio:126, suffix:5)
+  Decoder输出:     41 tokens/s (总: 252)
 
 [转录耗时]
-  - 音频编码：  1603ms
-  - CTC解码：    248ms
-  - LLM读取：    553ms
-  - LLM生成：   6224ms
-  - 总耗时：    9.12s
+  - 音频编码：  1917ms
+  - CTC解码：    384ms (Infer: 316ms, Dec: 2ms, HW: 67ms)
+  - Prompt:        1ms
+  - LLM读取：    533ms
+  - LLM生成：   6122ms
+  - 时间对齐：   203ms
+  - 推理总计：  9.16s
 
 ✓ 字幕已导出至: input.srt
 ```
