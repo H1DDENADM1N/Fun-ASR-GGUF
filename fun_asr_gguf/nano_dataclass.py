@@ -84,12 +84,21 @@ class Timings:
         total: 总耗时
     """
     encode: float = 0.0
+    load_audio: float = 0.0
     ctc: float = 0.0
     prepare: float = 0.0
     inject: float = 0.0
     llm_generate: float = 0.0
     align: float = 0.0
     total: float = 0.0
+    
+    # Detailed stats
+    ctc_infer: float = 0.0
+    ctc_decode: float = 0.0
+    ctc_cast: float = 0.0
+    ctc_argmax: float = 0.0
+    ctc_loop: float = 0.0
+    hotword_verify: float = 0.0
 
 
 @dataclass

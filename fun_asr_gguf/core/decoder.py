@@ -3,7 +3,7 @@ import ctypes
 import numpy as np
 from typing import List, Tuple, Optional, Dict, Any
 
-from .. import nano_llama
+from .. import llama
 from ..nano_ctc import decode_ctc, align_timestamps
 from ..nano_onnx import encode_audio
 from ..utils import vprint
@@ -16,22 +16,35 @@ class CTCDecoder:
     def __init__(self, models: ModelManager):
         self.models = models
 
-    def decode(self, enc_output: np.ndarray, enable_ctc: bool, max_hotwords: int) -> Tuple[List, List[str]]:
+    def decode(self, enc_output: np.ndarray, enable_ctc: bool, max_hotwords: int) -> Tuple[List, List[str], Dict[str, float]]:
+        t_stats = {"infer": 0.0, "decode": 0.0, "hotword": 0.0}
+        
         if not enable_ctc or self.models.ctc_sess is None:
-            return [], []
+            return [], [], t_stats
 
+        # 1. Inference
+        t0 = time.perf_counter()
         ctc_logits = self.models.ctc_sess.run(None, {"enc_output": enc_output})[0]
-        ctc_text, ctc_results = decode_ctc(ctc_logits, self.models.ctc_id2token)
+        t_stats["infer"] = time.perf_counter() - t0
+
+        # 2. Decoding
+        t0 = time.perf_counter()
+        ctc_text, ctc_results, ctc_details = decode_ctc(ctc_logits, self.models.ctc_id2token)
+        t_stats["decode"] = time.perf_counter() - t0
+        t_stats.update(ctc_details) # cast, argmax, loop
 
         hotwords = []
+        # 3. Hotword Verification
+        t0 = time.perf_counter()
         if self.models.corrector and self.models.corrector.hotwords and ctc_text:
             res = self.models.corrector.correct(ctc_text, k=max_hotwords)
             candidates = set()
             for _, hw, _ in res.matchs: candidates.add(hw)
             for _, hw, _ in res.similars: candidates.add(hw)
             hotwords = list(candidates)
+        t_stats["hotword"] = time.perf_counter() - t0
             
-        return ctc_results, hotwords
+        return ctc_results, hotwords, t_stats
 
 class LLMDecoder:
     """负责 LLM 推理循环"""
@@ -45,82 +58,54 @@ class LLMDecoder:
         n_input_tokens: int,
         n_predict: int,
         stream_output: bool = False,
-        reporter: Optional[DisplayReporter] = None
+        reporter: Optional[DisplayReporter] = None,
+        temperature: float = 0.3,
+        top_p: float = 1.0,
+        top_k: int = 50
     ) -> Tuple[str, int, float, float]:
         
         t_inject_start = time.perf_counter()
         
         # 1. Inject
-        mem = nano_llama.llama_get_memory(self.models.ctx)
-        nano_llama.llama_memory_clear(mem, True)
+        self.models.ctx.clear_kv_cache()
         
-        batch_embd = nano_llama.llama_batch_init(n_input_tokens, full_embd.shape[1], 1)
-        batch_embd.n_tokens = n_input_tokens
-        batch_embd.token = ctypes.cast(None, ctypes.POINTER(nano_llama.llama_token))
-        
-        if not full_embd.flags['C_CONTIGUOUS']:
-            full_embd = np.ascontiguousarray(full_embd)
-        ctypes.memmove(batch_embd.embd, full_embd.ctypes.data, full_embd.nbytes)
+        batch_embd = llama.LlamaBatch(n_input_tokens, full_embd.shape[1], 1)
+        batch_embd.set_embd(full_embd)
+        batch_embd.struct.token = ctypes.cast(None, ctypes.POINTER(llama.llama_token))
 
-        for k in range(n_input_tokens):
-            batch_embd.pos[k] = k
-            batch_embd.n_seq_id[k] = 1
-            batch_embd.seq_id[k][0] = 0
-            batch_embd.logits[k] = 1 if k == n_input_tokens - 1 else 0
-
-        ret = nano_llama.llama_decode(self.models.ctx, batch_embd)
-        nano_llama.llama_batch_free(batch_embd)
+        ret = self.models.ctx.decode(batch_embd)
         if ret != 0: raise RuntimeError(f"Decode failed (ret={ret})")
         
         t_inject = time.perf_counter() - t_inject_start
 
         # 2. Generation Loop
         t_gen_start = time.perf_counter()
-        vocab_size = nano_llama.llama_vocab_n_tokens(self.models.vocab)
-        batch_text = nano_llama.llama_batch_init(1, 0, 1)
-        batch_text.n_tokens = 1
+        batch_text = llama.LlamaBatch(1, 0, 1)
 
-        generated_text = ""
         current_pos = n_input_tokens
-        decoder_utf8 = nano_llama.ByteDecoder()
-        tokens_generated = 0
+        asr_decoder = llama.ASRStreamDecoder(self.models.vocab, reporter if stream_output else None)
+        
+        with llama.LlamaSampler(temperature=temperature, top_k=top_k, top_p=top_p) as smpl:
+            for _ in range(n_predict):
+                # 使用面向对象接口采样
+                token_id = smpl.sample(self.models.ctx, -1)
 
-        for _ in range(n_predict):
-            logits_ptr = nano_llama.llama_get_logits(self.models.ctx)
-            logits_arr = np.ctypeslib.as_array(logits_ptr, shape=(vocab_size,))
-            token_id = int(np.argmax(logits_arr))
+                if token_id == self.models.eos_token or token_id in self.stop_tokens:
+                    break
 
-            if token_id == self.models.eos_token or token_id in self.stop_tokens:
-                break
+                # 集成化处理新 Token：解码字节 -> 拼接 -> 实时汇报
+                asr_decoder.push(token_id)
 
-            raw_bytes = nano_llama.token_to_bytes(self.models.vocab, token_id)
-            text_piece = decoder_utf8.decode(raw_bytes)
-            generated_text += text_piece
-            tokens_generated += 1
+                if self.models.ctx.decode_token(batch_text, token_id, current_pos) != 0:
+                    break
+                current_pos += 1
+        
+        asr_decoder.flush()
 
-            if stream_output:
-                if reporter: reporter.stream(text_piece)
-                else: print(text_piece, end="", flush=True)
-
-            batch_text.token[0] = token_id
-            batch_text.pos[0] = current_pos
-            batch_text.n_seq_id[0] = 1
-            batch_text.seq_id[0][0] = 0
-            batch_text.logits[0] = 1
-
-            if nano_llama.llama_decode(self.models.ctx, batch_text) != 0: break
-            current_pos += 1
-
-        remaining = decoder_utf8.flush()
-        generated_text += remaining
-        if stream_output and remaining:
-            if reporter: reporter.stream(remaining)
-            else: print(remaining, end="", flush=True)
-
-        nano_llama.llama_batch_free(batch_text)
+        # batch_text 会由 __del__ 自动释放
         t_gen = time.perf_counter() - t_gen_start
         
-        return generated_text, tokens_generated, t_inject, t_gen
+        return asr_decoder.generated_text, asr_decoder.tokens_generated, t_inject, t_gen
 
 class StreamDecoder:
     """协调完整流程的解码器"""
@@ -135,7 +120,10 @@ class StreamDecoder:
         language: Optional[str] = None,
         context: Optional[str] = None,
         verbose: bool = True,
-        reporter: Optional[DisplayReporter] = None
+        reporter: Optional[DisplayReporter] = None,
+        temperature: float = 0.3,
+        top_p: float = 1.0,
+        top_k: int = 50
     ) -> DecodeResult:
         
         timings = Timings()
@@ -150,19 +138,31 @@ class StreamDecoder:
         # 2. CTC
         if reporter: reporter.print("\n[3] CTC 解码...")
         t_s = time.perf_counter()
-        ctc_results, hotwords = self.ctc_decoder.decode(
+        ctc_results, hotwords, ctc_times = self.ctc_decoder.decode(
             enc_output, 
             self.models.config.enable_ctc, 
             self.models.config.max_hotwords
         )
         timings.ctc = time.perf_counter() - t_s
+        timings.ctc_infer = ctc_times["infer"]
+        timings.ctc_decode = ctc_times["decode"]
+        timings.hotword_verify = ctc_times["hotword"]
+        
+        # Store micro-stats dynamically to avoid modifying dataclass too much if not needed
+        # Or ideally extend Timings dataclass. For now let's just setattr
+        timings.ctc_cast = ctc_times.get("cast", 0.0)
+        timings.ctc_argmax = ctc_times.get("argmax", 0.0)
+        timings.ctc_loop = ctc_times.get("loop", 0.0)
         
         if verbose and ctc_results:
             ctc_text = "".join([r.text for r in ctc_results])
             if reporter:
                 reporter.print(f"    CTC: {ctc_text}")
                 if hotwords: reporter.print(f"    热词: {hotwords}")
-        if reporter: reporter.print(f"    耗时: {timings.ctc*1000:.2f}ms")
+        if reporter: 
+            reporter.print(f"    耗时: {timings.ctc*1000:.2f}ms (Infer: {timings.ctc_infer*1000:.0f}ms, "
+                           f"Dec: {timings.ctc_decode*1000:.0f}ms, "
+                           f"HW: {timings.hotword_verify*1000:.0f}ms)")
 
         # 3. Prompt
         if reporter: reporter.print("\n[4] 准备 Prompt...")
@@ -184,7 +184,8 @@ class StreamDecoder:
         full_embd = np.concatenate([p_embd, audio_embd.astype(np.float32), s_embd], axis=0)
         text, n_gen, t_inj, t_gen = self.llm_decoder.decode(
             full_embd, full_embd.shape[0], self.models.config.n_predict, 
-            stream_output=verbose, reporter=reporter
+            stream_output=verbose, reporter=reporter,
+            temperature=temperature, top_p=top_p, top_k=top_k
         )
         text = text.strip()
         timings.inject = t_inj

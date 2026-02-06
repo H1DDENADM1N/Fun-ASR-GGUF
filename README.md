@@ -73,6 +73,9 @@ modelscope download --model FunAudioLLM/Fun-ASR-Nano-2512 --local_dir ./Fun-ASR-
 uv run 01-Export-Encoder-Adaptor-CTC.py
 # python 01-Export-Encoder-Adaptor-CTC.py
 
+# 将 onnx 量化为 fp16 和 int8
+python 02-Quantize-ONNX.py
+
 # 导出 LLM Decoder (INT8)
 uv run 02-Export-Decoder-GGUF.py
 # python 02-Export-Decoder-GGUF.py
@@ -147,14 +150,15 @@ print(result.text)
 ### 内存占用
 
  - **Encoder**（约 200M 参数）
-   - FP32：~800MB 内存
-   - INT8：~200MB 内存（但不推荐，准确率下降明显）
+   - FP16：~400MB 内存（DML加速）
+   - INT8：~200MB 内存（CPU加载）
  - **CTC Decoder**：内存占用可忽略（几十 MB）
  - **LLM Decoder**（约 600M 参数）
    - INT8：~1.2GB 内存或显存（显卡内会用fp16进行计算，但比原生fp16要快）
    - FP16：~1.2GB 内存或显存
+   - 另外 4096 的上下文也会占用 400M 显存
 
- **总内存占用**（推荐 FP32 Encoder + INT8 Decoder）：约 **2GB**（CPU 内存或 GPU 显存）
+ **总内存占用**（推荐 FP16 Encoder + INT8 Decoder）：约 **1.8GB**（CPU 内存或 GPU 显存）
 
 ---
 
@@ -213,25 +217,38 @@ print(result.timings)        # 各阶段耗时
 
 ## 性能参考
 
-以下是在小新Pro16GT（U9-258H + RTX5050）笔记本上的效果，60秒的睡前消息音频，转录用时2.59秒。
+以下是在小新Pro16GT（U9-258H + RTX5050）笔记本上的效果，60秒的睡前消息音频，转录用时1.89秒。
 
-需要注意的是，**LLM Decoder 所需时间取决于吐出文字的数量，不适合用 RTF 描述**，睡前消息音频的文字密度非常高，短短60秒就有350个字，但这段音频的速度可以作为下限参考，即 RTF 最慢也不会慢过 0.04
+需要注意的是，**LLM Decoder 所需时间取决于吐出文字的数量，不适合用 RTF 描述**，睡前消息音频的文字密度非常高，短短60秒就有350个字，但这段音频的速度可以作为下限参考，即 RTF 最慢也不会慢过 0.03
 
 在文字密度更低的音频上，识别速度还能更快。
 
 ```
 [统计]
   音频长度:  60.00s
-  Decoder输入:   6994 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
-  Decoder输出:    213 tokens/s (总: 256)
+  Decoder输入:  24689 tokens/s (总: 204, prefix:73, audio:126, suffix:5)
+  Decoder输出:    219 tokens/s (总: 253)
 
 [转录耗时]
-  - 音频编码：   934ms
-  - CTC解码：    134ms
-  - LLM读取：     29ms
-  - LLM生成：   1202ms
-  - 时间戳对齐:  119ms
-  - 总耗时：    2.59s
+  - 音频编码：   359ms
+  - CTC解码：     67ms (Infer: 36ms, Dec: 1ms, HW: 30ms)
+  - LLM读取：      8ms
+  - LLM生成：   1153ms
+  - 总耗时：    1.89s
+
+✓ 字幕已导出至: input.srt
+
+------------------------------ 完整转录文本 ------------------------------
+大家好，2026年1月11日星期日，欢迎收看1004期《睡前消息》。请静静介绍话题。去年10月19日967 
+期节目说到委内瑞拉问题，我们回顾一下你当时的评论。无论是从集结的兵力来看，还是从动机来看 
+，特朗普政府并不打算对委内瑞拉政权发动全面的进攻，最多是发动象征性的轰炸进行政治投机。在 
+诺贝尔和平奖发给了委内瑞拉反对派之后，美国军队进攻的概率进一步降低。现在美国突袭委内瑞拉 
+，抓走了总统马杜罗，督工你怎么看待两个月之前的判断？当初的判断不变，美国对于委内瑞拉的突 
+袭性质依然是政治投机，不能算是地面战争。入侵的美国军队总数是一两百，站在委内瑞拉领土上的 
+时间不超过一个小时，算是地面战争或者全面进攻，实在有点勉强。当然，美国东用总力量并不小，
+150架先进飞机加上经年累月部署的情报网络，这放在东亚或者欧洲也不是一只很小的力量。用到美国 
+的西半球主场压倒委内瑞拉的军队那是必然的。
+--------------------------------------------------------------------------
 ```
 
 同一段音频，纯 CPU 推理速度：
@@ -239,16 +256,15 @@ print(result.timings)        # 各阶段耗时
 ```
 [统计]
   音频长度:  60.00s
-  Decoder输入:    318 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
-  Decoder输出:     51 tokens/s (总: 255)
+  Decoder输入:    313 tokens/s (总: 203, prefix:72, audio:126, suffix:5)
+  Decoder输出:     48 tokens/s (总: 256)
 
 [转录耗时]
-  - 音频编码：   922ms
-  - CTC解码：    145ms
-  - LLM读取：    637ms
-  - LLM生成：   5016ms
-  - 时间戳对齐:  149ms
-  - 总耗时：    7.04s
+  - 音频编码：   727ms
+  - CTC解码：     95ms (Infer: 65ms, Dec: 1ms, HW: 29ms)
+  - LLM读取：    649ms
+  - LLM生成：   5334ms
+  - 总耗时：    7.19s
 ```
 
 长音频推理输出示例：
@@ -259,13 +275,13 @@ print(result.timings)        # 各阶段耗时
     检测到长音频，开启分段识别模式...
 
 [转录耗时]
-  - 音频编码：  5326ms
-  - CTC解码：    681ms
-  - LLM读取：    192ms
-  - LLM生成：   6022ms
-  - 总耗时：   13.57s
+  - 音频编码：  1690ms
+  - CTC解码：    961ms (Infer: 210ms, Dec: 6ms, HW: 744ms)
+  - LLM读取：     56ms
+  - LLM生成：   5870ms
+  - 总耗时：    9.90s
 
-✓ 字幕已导出至: input5.srt
+✓ 字幕已导出至: input500.srt
 
 ```
 ---
@@ -311,12 +327,9 @@ print(result.timings)        # 各阶段耗时
 
 ## 常见问题
 
-**Q: Encoder 为什么不用 INT8？**  
-- 测试发现 Encoder 用 INT8 会有可观察到的准确率下降，建议保持 FP32，延迟上也就差个100毫秒左右。
+**Q: Encoder 和 CTC 如何选择量化精度？**  
+- Encoder-Adapter 以及 CTC Decoder 都是在用 onnxruntime 加速，它既支持 CPU，也支持通过 DirectML 使用显卡加速。CPU 跑 int8 最快，GPU 跑 fp16 最快。
 
-**Q: 如何选择量化级别？**  
-- **Encoder**：尽量 FP32，保证精度
-- **CTC Decoder 和 LLM Decoder**：推荐 Q8_0（INT8），速度快且准确率影响小
 
 **Q: 支持哪些语言？**  
 - Fun-ASR-Nano-2512 支持中文、英文、日文。

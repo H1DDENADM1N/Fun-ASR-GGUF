@@ -65,8 +65,8 @@ json_output = False
 
 # 模型文件路径
 model_dir = "./model"
-encoder_onnx_path = f"{model_dir}/Fun-ASR-Nano-Encoder-Adaptor.fp32.onnx"
-ctc_onnx_path = f"{model_dir}/Fun-ASR-Nano-CTC.int8.onnx"
+encoder_onnx_path = f"{model_dir}/Fun-ASR-Nano-Encoder-Adaptor.fp16.onnx"
+ctc_onnx_path = f"{model_dir}/Fun-ASR-Nano-CTC.fp16.onnx"
 decoder_gguf_path = f"{model_dir}/Fun-ASR-Nano-Decoder.q8_0.gguf"
 tokens_path = f"{model_dir}/tokens.txt"
 hotwords_path = "./hot.txt"  # 可选，留空则不使用热词
@@ -111,10 +111,9 @@ def main():
         language=language,
         context=context,
         verbose=False,
-        duration=10.0,
+        duration=5.0,
     )
 
-    input('回车开始转录......')
     result = engine.transcribe(
         audio_file,
         language=language,
@@ -123,8 +122,9 @@ def main():
         segment_size=60.0,
         overlap=4.0,
         start_second=0.0,
-        duration=300.0,
+        duration=60.0,
         srt=True,
+        temperature=0.4,
     )
 
     # 输出结果
