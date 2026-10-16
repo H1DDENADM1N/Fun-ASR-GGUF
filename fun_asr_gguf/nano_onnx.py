@@ -1,7 +1,10 @@
-import onnxruntime
 import time
-import os
+from typing import Optional
+
 import numpy as np
+import onnxruntime
+from loguru import logger as default_logger
+from loguru._logger import Logger
 
 """
 ONNX 推理底层工具 - DirectML (DML) 性能优化指南
@@ -19,9 +22,16 @@ ONNX 推理底层工具 - DirectML (DML) 性能优化指南
 """
 
 
-def load_onnx_models(encoder_path, ctc_path, padding_secs=30):
+def load_onnx_models(
+    encoder_path,
+    ctc_path,
+    padding_secs=30,
+    directml_enable=True,
+    logger: Optional[Logger] = None,
+):
     """步骤 1: 加载 ONNX 音频编码器和 CTC Head 并进行热身"""
-    # print("\n[1] 加载 ONNX Models (Encoder + CTC)...")
+    _logger = logger if logger is not None else default_logger
+    _logger.trace("\n[1] 加载 ONNX Models (Encoder + CTC)...")
 
     t_start = time.perf_counter()
     session_opts = onnxruntime.SessionOptions()
@@ -32,8 +42,13 @@ def load_onnx_models(encoder_path, ctc_path, padding_secs=30):
     )
 
     providers = ["CPUExecutionProvider"]
-    if "DmlExecutionProvider" in onnxruntime.get_available_providers():
+    if (
+        directml_enable
+        and "DmlExecutionProvider" in onnxruntime.get_available_providers()
+    ):
         providers.insert(0, "DmlExecutionProvider")
+        _logger.debug(f"[1] 加载 ONNX Models (Encoder + CTC) with DML...")
+    _logger.info(f"Onnxruntime providers: {providers}")
 
     encoder_sess = onnxruntime.InferenceSession(
         encoder_path, sess_options=session_opts, providers=providers
@@ -62,7 +77,7 @@ def load_onnx_models(encoder_path, ctc_path, padding_secs=30):
         else:
             encoder_sess.run(None, {in_names[0]: dummy_audio})
 
-        # CTC Warmup
+        # CTC Warmup - 使用与推理时相同的 padding 长度
         ctc_in = ctc_sess.get_inputs()[0]
         ctc_dtype = np.float16 if "float16" in ctc_in.type else np.float32
         # CTC input shape is [1, T, 512]
@@ -75,8 +90,9 @@ def load_onnx_models(encoder_path, ctc_path, padding_secs=30):
     return encoder_sess, ctc_sess, t_cost
 
 
-def encode_audio(audio, encoder_sess, padding_secs=30):
+def encode_audio(audio, encoder_sess, padding_secs=30, logger: Optional[Logger] = None):
     """使用 ONNX Encoder 获取 LLM 嵌入和 CTC 特征，支持自动 Padding"""
+    _logger = logger if logger is not None else default_logger
 
     # Check expected input type
     in_names = [x.name for x in encoder_sess.get_inputs()]
@@ -88,18 +104,27 @@ def encode_audio(audio, encoder_sess, padding_secs=30):
 
     # [Optimize] 检测 Provider，如果是 CPU，就按最低限度填充 Padding (因为 CPU 不存在 DML 的重编译开销)
     if encoder_sess.get_providers()[0] == "CPUExecutionProvider":
-        padding_secs = 1
+        _logger.trace("用 cpu ，按最低限度填充")
+        padding_secs = 1  # 对音频张量进行 padding，使其至少达到 1 秒
 
     target_samples = int(padding_secs * 16000)
 
     if actual_samples < target_samples:
-        # print(f"   [Padding] {actual_samples/16000:.2f}s -> {padding_secs}s")
+        _logger.trace(
+            f"   [Padding] {actual_samples / 16000:.2f}s -> {padding_secs}s (target={target_samples})"
+        )
         padded_audio = np.zeros(target_samples, dtype=audio.dtype)
         padded_audio[:actual_samples] = audio
         audio = padded_audio
+    else:
+        _logger.trace(
+            f"   [No Padding] audio_samples={actual_samples}, target={target_samples}"
+        )
 
     audio_input = audio.astype(dtype).reshape(1, 1, -1)
     ilens_input = np.array([actual_samples], dtype=np.int64)
+    _logger.trace(f"Audio shape: {audio_input.shape}, dtype: {audio_input.dtype}")
+    _logger.trace(f"ilens value: {ilens_input}")
 
     out_names = [x.name for x in encoder_sess.get_outputs()]
 

@@ -7,6 +7,9 @@ ASR 推理引擎入口点 (Facade)
 
 from typing import Optional
 
+from loguru import logger as default_logger
+from loguru._logger import Logger
+
 from .core.model_manager import ModelManager
 from .core.orchestrator import TranscriptionOrchestrator
 from .nano_dataclass import (
@@ -32,6 +35,10 @@ class FunASREngine:
         n_threads: int = None,
         similar_threshold: float = 0.6,
         max_hotwords: int = 10,
+        directml_enable: bool = True,
+        vulkan_enable: bool = True,
+        vulkan_force_fp32: bool = False,
+        logger: Optional[Logger] = None,
     ):
         # 封装配置
         self.config = ASREngineConfig(
@@ -45,11 +52,15 @@ class FunASREngine:
             n_threads=n_threads,
             similar_threshold=similar_threshold,
             max_hotwords=max_hotwords,
+            directml_enable=directml_enable,
+            vulkan_enable=vulkan_enable,
+            vulkan_force_fp32=vulkan_force_fp32,
         )
 
         # 初始化组件
-        self.models = ModelManager(self.config)
-        self.orchestrator = TranscriptionOrchestrator(self.models)
+        self.logger = logger if logger is not None else default_logger
+        self.models = ModelManager(self.config, logger=self.logger)
+        self.orchestrator = TranscriptionOrchestrator(self.models, logger=self.logger)
         self.sample_rate = self.config.sample_rate
 
     def initialize(self, verbose: bool = True) -> bool:
@@ -127,9 +138,15 @@ def create_asr_engine(
     tokens_path: str,
     hotwords_path: str = None,
     enable_ctc: bool = True,
+    n_predict: int = 512,
+    n_threads: int = None,
     similar_threshold: float = 0.6,
     max_hotwords: int = 10,
+    directml_enable: bool = True,
+    vulkan_enable: bool = True,
+    vulkan_force_fp32: bool = False,
     verbose: bool = True,
+    logger: Optional[Logger] = None,
 ) -> FunASREngine:
     """创建并初始化 ASR 引擎的快捷入口"""
     engine = FunASREngine(
@@ -139,18 +156,15 @@ def create_asr_engine(
         tokens_path=tokens_path,
         hotwords_path=hotwords_path,
         enable_ctc=enable_ctc,
+        n_predict=n_predict,
+        n_threads=n_threads,
         similar_threshold=similar_threshold,
         max_hotwords=max_hotwords,
+        directml_enable=directml_enable,
+        vulkan_enable=vulkan_enable,
+        vulkan_force_fp32=vulkan_force_fp32,
+        logger=logger,
     )
-    try:
-        success = engine.initialize(verbose=verbose)
-        if not success:
-            print("Engine initialization returned False")
-            raise RuntimeError("Failed to initialize ASR engine")
-    except Exception as e:
-        print(f"Initialization error details: {type(e).__name__}: {e}")
-        import traceback
-
-        traceback.print_exc()  # 这会打印完整的堆栈跟踪
-        raise
+    if not engine.initialize(verbose=verbose):
+        raise RuntimeError("Failed to initialize ASR engine")
     return engine

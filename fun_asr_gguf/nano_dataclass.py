@@ -5,11 +5,12 @@ FunASR-GGUF 数据类型定义
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 
-
 # ==================== 识别结果相关 ====================
+
 
 @dataclass
 class RecognitionResult:
@@ -21,6 +22,7 @@ class RecognitionResult:
         timestamps: 字符级时间戳（秒）
         tokens: 字符/词元列表
     """
+
     text: str = ""
     timestamps: List[float] = field(default_factory=list)
     tokens: List[str] = field(default_factory=list)
@@ -38,6 +40,7 @@ class RecognitionStream:
         audio_data: 音频数据 (numpy array, float32)
         _result: 内部识别结果
     """
+
     sample_rate: int = 16000
     audio_data: Optional[np.ndarray] = None
     _result: Optional[RecognitionResult] = field(default=None, init=False, repr=False)
@@ -60,12 +63,12 @@ class RecognitionStream:
             self._result = RecognitionResult()
         return self._result
 
-    def set_result(self, text: str, timestamps: List[float] = None, tokens: List[str] = None):
+    def set_result(
+        self, text: str, timestamps: List[float] = None, tokens: List[str] = None
+    ):
         """设置识别结果（内部使用）"""
         self._result = RecognitionResult(
-            text=text,
-            timestamps=timestamps or [],
-            tokens=tokens or []
+            text=text, timestamps=timestamps or [], tokens=tokens or []
         )
 
 
@@ -83,22 +86,14 @@ class Timings:
         align: 时间戳对齐耗时
         total: 总耗时
     """
+
     encode: float = 0.0
-    load_audio: float = 0.0
     ctc: float = 0.0
     prepare: float = 0.0
     inject: float = 0.0
     llm_generate: float = 0.0
     align: float = 0.0
     total: float = 0.0
-    
-    # Detailed stats
-    ctc_infer: float = 0.0
-    ctc_decode: float = 0.0
-    ctc_cast: float = 0.0
-    ctc_argmax: float = 0.0
-    ctc_loop: float = 0.0
-    hotword_verify: float = 0.0
 
 
 @dataclass
@@ -113,6 +108,7 @@ class TranscriptionResult:
         hotwords: 检测到的热词列表
         timings: 各阶段耗时统计
     """
+
     text: str = ""
     segments: List[Dict[str, Any]] = field(default_factory=list)
     ctc_text: str = ""
@@ -121,6 +117,7 @@ class TranscriptionResult:
 
 
 # ==================== 引擎配置相关 ====================
+
 
 @dataclass
 class ASREngineConfig:
@@ -142,6 +139,7 @@ class ASREngineConfig:
         max_hotwords: 召回并发送给 LLM 的最大热词数
         sample_rate: 音频采样率
     """
+
     encoder_onnx_path: str
     ctc_onnx_path: str
     decoder_gguf_path: str
@@ -155,9 +153,13 @@ class ASREngineConfig:
     similar_threshold: float = 0.6
     max_hotwords: int = 10
     sample_rate: int = 16000
+    directml_enable: bool = True
+    vulkan_enable: bool = True
+    vulkan_force_fp32: bool = False
 
 
 # ==================== CTC 结果相关 ====================
+
 
 @dataclass
 class CTCResult:
@@ -170,6 +172,7 @@ class CTCResult:
         end: 结束时间（秒）
         score: 置信度分数
     """
+
     text: str
     start: float
     end: float
@@ -177,6 +180,7 @@ class CTCResult:
 
 
 # ==================== 统计信息相关 ====================
+
 
 @dataclass
 class Statistics:
@@ -193,6 +197,7 @@ class Statistics:
         tps_in: 输入 tokens/s
         tps_out: 输出 tokens/s
     """
+
     audio_duration: float = 0.0
     n_input_tokens: int = 0
     n_prefix_tokens: int = 0
@@ -229,6 +234,7 @@ class DecodeResult:
         timings: 各阶段耗时
         hotwords: 热词列表
     """
+
     text: str = ""
     ctc_results: List = field(default_factory=list)
     aligned: List[Dict[str, Any]] = field(default_factory=list)
@@ -238,26 +244,44 @@ class DecodeResult:
     n_gen: int = 0
     timings: Timings = field(default_factory=Timings)
     hotwords: List[str] = field(default_factory=list)
+    is_aborted: bool = False
+
+
+@dataclass
+class LLMDecodeResult:
+    """
+    LLM 解码结果
+
+    Attributes:
+        text: 生成的文本
+        n_gen: 生成的 token 数
+        t_inject: 注入耗时
+        t_gen: 生成耗时
+        is_aborted: 是否触发熔断
+    """
+
+    text: str = ""
+    n_gen: int = 0
+    t_inject: float = 0.0
+    t_gen: float = 0.0
+    is_aborted: bool = False
 
 
 # ==================== 导出列表 ====================
 
 __all__ = [
     # 识别结果
-    'RecognitionResult',
-    'RecognitionStream',
-    'TranscriptionResult',
-    'DecodeResult',
-
+    "RecognitionResult",
+    "RecognitionStream",
+    "TranscriptionResult",
+    "DecodeResult",
+    "LLMDecodeResult",
     # 配置
-    'ASREngineConfig',
-
+    "ASREngineConfig",
     # 计时
-    'Timings',
-
+    "Timings",
     # CTC
-    'CTCResult',
-
+    "CTCResult",
     # 统计
-    'Statistics',
+    "Statistics",
 ]
