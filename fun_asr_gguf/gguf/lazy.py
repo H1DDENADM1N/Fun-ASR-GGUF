@@ -1,17 +1,19 @@
 from __future__ import annotations
-
 from abc import ABC, ABCMeta, abstractmethod
+
+import logging
 from typing import Any, Callable
 
 import numpy as np
-from loguru import logger
 from numpy.typing import DTypeLike
 
 
+logger = logging.getLogger(__name__)
+
+
 class LazyMeta(ABCMeta):
-    def __new__(
-        cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs
-    ):
+
+    def __new__(cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs):
         def __getattr__(self, name: str) -> Any:
             meta_attr = getattr(self._meta, name)
             if callable(meta_attr):
@@ -39,7 +41,6 @@ class LazyMeta(ABCMeta):
                     getattr(type(self)._tensor_type, op_name),
                     meta_noop=meta_noop,
                 )(self, *args, **kwargs)
-
             return wrapped_special_op
 
         # special methods bypass __getattr__, so they need to be added manually
@@ -47,44 +48,11 @@ class LazyMeta(ABCMeta):
         # NOTE: doing this from a metaclass is very convenient
         # TODO: make this even more comprehensive
         for binary_op in (
-            "lt",
-            "le",
-            "eq",
-            "ne",
-            "ge",
-            "gt",
-            "add",
-            "and",
-            "floordiv",
-            "lshift",
-            "mod",
-            "mul",
-            "matmul",
-            "or",
-            "pow",
-            "rshift",
-            "sub",
-            "truediv",
-            "xor",
-            "iadd",
-            "iand",
-            "ifloordiv",
-            "ilshift",
-            "imod",
-            "imul",
-            "ior",
-            "irshift",
-            "isub",
-            "ixor",
-            "radd",
-            "rand",
-            "rfloordiv",
-            "rmul",
-            "ror",
-            "rpow",
-            "rsub",
-            "rtruediv",
-            "rxor",
+            "lt", "le", "eq", "ne", "ge", "gt",
+            "add", "and", "floordiv", "lshift", "mod", "mul", "matmul",
+            "or", "pow", "rshift", "sub", "truediv", "xor",
+            "iadd", "iand", "ifloordiv", "ilshift", "imod", "imul", "ior", "irshift", "isub", "ixor",
+            "radd", "rand", "rfloordiv", "rmul", "ror", "rpow", "rsub", "rtruediv", "rxor",
         ):
             attr_name = f"__{binary_op}__"
             # evaluation on the meta tensor is needed in case there's broadcasting
@@ -97,9 +65,7 @@ class LazyMeta(ABCMeta):
             namespace[attr_name] = mk_wrap(attr_name, meta_noop=True)
 
         for special_op in (
-            "getitem",
-            "setitem",
-            "len",
+            "getitem", "setitem", "len",
         ):
             attr_name = f"__{special_op}__"
             namespace[attr_name] = mk_wrap(attr_name, meta_noop=False)
@@ -116,15 +82,7 @@ class LazyBase(ABC, metaclass=LazyMeta):
     _kwargs: dict[str, Any]
     _func: Callable[[Any], Any] | None
 
-    def __init__(
-        self,
-        *,
-        meta: Any,
-        data: Any | None = None,
-        args: tuple = (),
-        kwargs: dict[str, Any] | None = None,
-        func: Callable[[Any], Any] | None = None,
-    ):
+    def __init__(self, *, meta: Any, data: Any | None = None, args: tuple = (), kwargs: dict[str, Any] | None = None, func: Callable[[Any], Any] | None = None):
         super().__init__()
         self._meta = meta
         self._data = data
@@ -154,15 +112,7 @@ class LazyBase(ABC, metaclass=LazyMeta):
             return o
 
     @classmethod
-    def _wrap_fn(
-        cls,
-        fn: Callable,
-        *,
-        use_self: LazyBase | None = None,
-        meta_noop: bool
-        | DTypeLike
-        | tuple[DTypeLike, Callable[[tuple[int, ...]], tuple[int, ...]]] = False,
-    ) -> Callable[[Any], Any]:
+    def _wrap_fn(cls, fn: Callable, *, use_self: LazyBase | None = None, meta_noop: bool | DTypeLike | tuple[DTypeLike, Callable[[tuple[int, ...]], tuple[int, ...]]] = False) -> Callable[[Any], Any]:
         def wrapped_fn(*args, **kwargs):
             if kwargs is None:
                 kwargs = {}
@@ -188,17 +138,13 @@ class LazyBase(ABC, metaclass=LazyMeta):
                     if isinstance(meta_noop, tuple):
                         dtype, shape = meta_noop
                         assert callable(shape)
-                        res = cls.meta_with_dtype_and_shape(dtype, shape(res.shape))
+                        res = cls.meta_with_dtype_and_shape(dtype, shape(res.shape))  # ty: ignore[call-top-callable]
                     else:
                         res = cls.meta_with_dtype_and_shape(meta_noop, res.shape)
 
             if isinstance(res, cls._tensor_type):
-                return cls(
-                    meta=cls.eager_to_meta(res), args=args, kwargs=kwargs, func=fn
-                )
-            elif isinstance(res, tuple) and all(
-                isinstance(t, cls._tensor_type) for t in res
-            ):
+                return cls(meta=cls.eager_to_meta(res), args=args, kwargs=kwargs, func=fn)
+            elif isinstance(res, tuple) and all(isinstance(t, cls._tensor_type) for t in res):
                 # share the evaluation between lazy tuple elements
                 shared_args: list = [args, None]
 
@@ -207,23 +153,13 @@ class LazyBase(ABC, metaclass=LazyMeta):
                     if a[1] is None:
                         a[1] = fn(*a[0], **kw)
                     return a[1][i]
-
-                return tuple(
-                    cls(
-                        meta=cls.eager_to_meta(res[i]),
-                        args=(shared_args, i),
-                        kwargs=kwargs,
-                        func=eager_tuple_element,
-                    )
-                    for i in range(len(res))
-                )
+                return tuple(cls(meta=cls.eager_to_meta(res[i]), args=(shared_args, i), kwargs=kwargs, func=eager_tuple_element) for i in range(len(res)))
             else:
                 del res  # not needed
                 # non-tensor return likely relies on the contents of the args
                 # (e.g. the result of torch.equal)
                 eager_args = cls.to_eager(args)
                 return fn(*eager_args, **kwargs)
-
         return wrapped_fn
 
     @classmethod
@@ -254,8 +190,7 @@ class LazyBase(ABC, metaclass=LazyMeta):
     # must be overridden, meta tensor init is backend-specific
     @classmethod
     @abstractmethod
-    def meta_with_dtype_and_shape(cls, dtype: Any, shape: Any) -> Any:
-        pass
+    def meta_with_dtype_and_shape(cls, dtype: Any, shape: Any) -> Any: pass
 
     @classmethod
     def from_eager(cls, t: Any) -> Any:
@@ -274,9 +209,7 @@ class LazyNumpyTensor(LazyBase):
     shape: tuple[int, ...]  # Makes the type checker happy in quants.py
 
     @classmethod
-    def meta_with_dtype_and_shape(
-        cls, dtype: DTypeLike, shape: tuple[int, ...]
-    ) -> np.ndarray[Any, Any]:
+    def meta_with_dtype_and_shape(cls, dtype: DTypeLike, shape: tuple[int, ...]) -> np.ndarray[Any, Any]:
         # The initial idea was to use np.nan as the fill value,
         # but non-float types like np.int16 can't use that.
         # So zero it is.
@@ -285,19 +218,76 @@ class LazyNumpyTensor(LazyBase):
 
     def astype(self, dtype, *args, **kwargs):
         meta = type(self).meta_with_dtype_and_shape(dtype, self._meta.shape)
-        full_args = (
-            self,
-            dtype,
-        ) + args
-        return type(self)(
-            meta=meta,
-            args=full_args,
-            kwargs=kwargs,
-            func=(lambda a, *args, **kwargs: a.astype(*args, **kwargs)),
-        )
+        full_args = (self, dtype,) + args
+        return type(self)(meta=meta, args=full_args, kwargs=kwargs, func=(lambda a, *args, **kwargs: a.astype(*args, **kwargs)))
 
     def tofile(self, *args, **kwargs):
         eager = LazyNumpyTensor.to_eager(self)
         return eager.tofile(*args, **kwargs)
 
     # TODO: __array_function__
+
+
+# Tensor written to file one row-chunk at a time
+class LazyChunkedTensor:
+
+    def __init__(
+        self, chunks: list[Callable[[], np.ndarray]], shape: tuple[int, ...], dtype: DTypeLike,
+        qtype: Any = None, byteswap: bool = False,
+    ):
+        self._chunks = chunks
+        self._qtype = qtype
+        self._byteswap = byteswap
+        self.shape = tuple(shape)
+        self.dtype = np.dtype(dtype)
+
+    @property
+    def nbytes(self) -> int:
+        n = self.dtype.itemsize
+        for d in self.shape:
+            n *= d
+        return n
+
+    def numpy(self) -> LazyChunkedTensor:
+        return self
+
+    def __array__(self, *args, **kwargs):
+        # numpy would otherwise make a 1-element object array of self, and write 8 bytes
+        raise TypeError("LazyChunkedTensor cannot become an ndarray, it is written in chunks")
+
+    def quantize(self, qtype: Any) -> LazyChunkedTensor:
+        from .constants import GGMLQuantizationType
+        from .quants import QuantError, quant_shape_to_byte_shape
+
+        if qtype == GGMLQuantizationType.F32:
+            shape, dtype = self.shape, np.dtype(np.float32)
+        elif qtype == GGMLQuantizationType.F16:
+            shape, dtype = self.shape, np.dtype(np.float16)
+        else:
+            try:
+                shape, dtype = quant_shape_to_byte_shape(self.shape, qtype), np.dtype(np.uint8)
+            except ValueError as e:
+                # raised here and not per chunk, so callers can still fall back to F16
+                raise QuantError(str(e)) from e
+        return LazyChunkedTensor(self._chunks, shape, dtype, qtype, self._byteswap)
+
+    def byteswap(self, inplace: bool = False) -> LazyChunkedTensor:
+        if inplace:
+            raise NotImplementedError("a chunked tensor cannot be byteswapped in place")
+        return LazyChunkedTensor(self._chunks, self.shape, self.dtype, self._qtype, not self._byteswap)
+
+    def tofile(self, *args, **kwargs) -> None:
+        from .quants import quantize
+
+        written = 0
+        for load_chunk in self._chunks:
+            chunk = load_chunk()
+            if self._qtype is not None:
+                # exact only because chunks split on rows, and blocks never cross one
+                chunk = quantize(chunk, self._qtype)
+            if self._byteswap:
+                chunk = chunk.byteswap(inplace=False)
+            chunk.tofile(*args, **kwargs)
+            written += chunk.nbytes
+            del chunk
+        assert written == self.nbytes, f"chunked tensor wrote {written} bytes, expected {self.nbytes}"
