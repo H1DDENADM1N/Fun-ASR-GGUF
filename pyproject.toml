@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = "==3.10.*"
 dependencies = [
     "gguf>=0.17.1",
+    "loguru>=0.7.3",
     "numpy>=2.2.6",
     "onnx>=1.20.1",
     "pydub>=0.25.1",
@@ -31,7 +32,7 @@ gpu = ["onnxruntime-gpu>=1.23.2"]
 notebook = ["ipykernel>=7.1.0", "ipynb>=0.5.1", "pip>=25.3"]
 
 [[tool.uv.index]]
-url = "https://mirrors.ustc.edu.cn/pypi/simple"
+url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
 
 [project.urls]
