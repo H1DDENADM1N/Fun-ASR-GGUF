@@ -38,12 +38,21 @@ setup_ffmpeg()
 
 # ==================== Vulkan 选项 ====================
 
-# os.environ["VK_ICD_FILENAMES"] = "none"       # 禁止 Vulkan
-# os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"   # 禁止 Vulkan 用独显（强制用集显）
-# os.environ["GGML_VK_DISABLE_F16"] = "1"       # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
-
+# os.environ["VK_ICD_FILENAMES"] = "none"  # 禁止 Vulkan
+# os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"  # 禁止 Vulkan 用独显（强制用集显）
+# os.environ["GGML_VK_DISABLE_F16"] = (
+#     "1"  # 禁止 VulkanFP16 计算（Intel集显fp16有溢出问题）
+# )
 
 # ==================== 配置区域 ====================
+
+# flash-attention
+# （已实测：b11675 的 flash-attn(FLASH_ATTN_EXT) 输出乱码/NaN，
+#   本机必须置 False 才正确，默认关闭）
+flash_attn = False  # 是否启用 flash-attention （AMD 显卡若 NaN/乱码可设 False 关闭 flash-attention）
+
+# DirectML 编码器加速（AMD 显卡若 NaN/乱码可设 False 走 CPU）
+directml_enable = False
 
 # 音频文件路径
 audio_file = "input.mp3"
@@ -65,8 +74,8 @@ json_output = False
 
 # 模型文件路径
 model_dir = "./model"
-encoder_onnx_path = f"{model_dir}/Fun-ASR-Nano-Encoder-Adaptor.fp16.onnx"
-ctc_onnx_path = f"{model_dir}/Fun-ASR-Nano-CTC.fp16.onnx"
+encoder_onnx_path = f"{model_dir}/Fun-ASR-Nano-Encoder-Adaptor.int8.onnx"
+ctc_onnx_path = f"{model_dir}/Fun-ASR-Nano-CTC.int8.onnx"
 decoder_gguf_path = f"{model_dir}/Fun-ASR-Nano-Decoder.q8_0.gguf"
 tokens_path = f"{model_dir}/tokens.txt"
 hotwords_path = "./hot.txt"  # 可选，留空则不使用热词
@@ -102,6 +111,8 @@ def main():
         similar_threshold=0.6,
         max_hotwords=10,
         enable_ctc=enable_ctc,
+        directml_enable=directml_enable,
+        flash_attn=flash_attn,
         verbose=verbose,
     )
 
